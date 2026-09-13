@@ -530,10 +530,12 @@ binary and `codesign -v` calls it valid.
 on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
 at startup.
 
-**No `browser_` tools**: Accessibility is not granted. Give it to the app that
-launches the server (terminal or MCP client), not to the browser, in System
-Settings → Privacy & Security → Accessibility, then restart that app. Note that
-re-signing the binary can invalidate an existing grant.
+**No `browser_` tools**: Accessibility is not granted. The grant belongs to the
+application that *launches* the server — your terminal, or the MCP client —
+not to `nautilus-mcp` itself and not to the browser. Add that application in
+System Settings → Privacy & Security → Accessibility and restart it. Because the
+grant follows the launcher, switching MCP clients means granting again, while
+reinstalling the server does not.
 
 **No `ask_local_model`**: the on-device model is unavailable (not Apple silicon,
 or Apple Intelligence off). Logged at startup; the tool is simply absent.

@@ -86,14 +86,22 @@ func runMain() async {
     // macOS tools. WindowManager is @MainActor, which is why the whole server
     // loop lives here.
     let manager = WindowManager()
+    // Shared by every capture and every image operation: observe once, then
+    // crop/OCR/diff without pushing the picture back across the protocol.
+    let frames = FrameStore()
     // `nil` entries are capabilities this Mac lacks; the server drops them so
     // the tool list describes what actually works here.
     var tools: [MCPTool?] = [
         ListWindowsTool(manager: manager),
-        CaptureWindowTool(manager: manager),
+        CaptureWindowTool(manager: manager, store: frames),
         ReadTextTool(manager: manager),
         DetectObjectsTool(manager: manager),
         SayTool(speech: TextToSpeech(config: .init(voice: voice))),
+        // Source-agnostic: these work on a frame from either capture tool.
+        ImageOCRTool(store: frames),
+        ImageCropTool(store: frames),
+        ImageRegionsTool(store: frames),
+        ImageDiffTool(store: frames),
     ]
 
     // Offered only where it exists. On a Mac without Apple Intelligence,
@@ -111,7 +119,7 @@ func runMain() async {
     if let androidSpec, androidSpec != "off" {
         let requested = androidSpec == "auto" ? nil : androidSpec
         do {
-            let androidTools = try makeAndroidTools(serial: requested)
+            let androidTools = try makeAndroidTools(serial: requested, store: frames)
             tools.append(contentsOf: androidTools)
             log("bound Android device, \(androidTools.count) tool(s)")
         } catch {

@@ -108,7 +108,11 @@ public final class ListWindowsTool: MCPTool {
 @MainActor
 public final class CaptureWindowTool: MCPTool {
     private let manager: WindowManager
-    public init(manager: WindowManager) { self.manager = manager }
+    private let store: FrameStore
+    public init(manager: WindowManager, store: FrameStore) {
+        self.manager = manager
+        self.store = store
+    }
 
     public nonisolated var name: String { "macos_capture_window" }
     public nonisolated var description: String {
@@ -125,8 +129,12 @@ public final class CaptureWindowTool: MCPTool {
         guard let base64 = WindowManager.cgImageToBase64(image) else {
             throw ToolFailure("could not encode the capture as PNG")
         }
+        // Registered like an Android observe, so image_crop / image_ocr /
+        // image_regions / image_diff work identically on either source.
+        let frame = store.register(image: image, source: "macos:\(info.appName ?? "?")")
         return MCPToolResult(
-            text: "Captured \(info.summary) — \(image.width)x\(image.height).",
+            text: "Captured \(info.summary) — \(image.width)x\(image.height). "
+                + "frame_id=\(frame.id) — crop, OCR or diff it without re-capturing.",
             images: [MCPImage(base64: base64)])
     }
 }

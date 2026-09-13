@@ -38,8 +38,20 @@ enum VisualMatcher {
     /// Used only when a prototype predates size recording: fractions of the
     /// search region's width.
     static let blindScales: [Double] = [0.08, 0.12, 0.18, 0.25, 0.35, 0.5, 0.7, 0.9]
-    /// How many proposals reach the expensive stage.
-    static let shortlist = 6
+    /// How many proposals survive the coarse sweep. Generous on purpose: the
+    /// sweep lands on a grid, so the true position often scores a little below
+    /// a neighbouring offset and needs to still be in the running when
+    /// refinement happens. At six, a real match sitting seventh never reached
+    /// the classifier at all.
+    static let coarseShortlist = 24
+    /// How many survive refinement and reach the expensive classifier.
+    static let refinedShortlist = 6
+    /// Local alignment search, in working-buffer pixels and scale multipliers.
+    /// A candidate is usually found but misaligned by a pixel or three, which
+    /// lets background into the window and collapses the score — that is a more
+    /// common failure than missing the element outright.
+    static let alignmentOffsets = [-4, -2, 0, 2, 4]
+    static let alignmentScales = [0.92, 1.0, 1.08]
 
     static func find(
         prototype: Prototype, frame: Frame, searchArea: NormRect, limit: Int,
@@ -124,8 +136,50 @@ enum VisualMatcher {
                 return dx < max(candidate.w, other.w) / 2 && dy < max(candidate.h, other.h) / 2
             }
             if !overlapping { kept.append(candidate) }
-            if kept.count >= shortlist { break }
+            if kept.count >= coarseShortlist { break }
         }
+
+        // --- Stage 1b: nudge each candidate into alignment ---------------------
+        func shapeScore(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Double? {
+            guard
+                let signature = ShapeBuilder.signature(
+                    fromLuma: luma, width: width, height: height, x: x, y: y, w: w, h: h),
+                !signature.isBlank
+            else { return nil }
+            return templates.map { signature.score(against: $0) }.max()
+        }
+
+        // Refinement maximizes the SHAPE score, but the verdict is mostly the
+        // feature print. Replacing a candidate with its shape-best neighbour
+        // therefore sometimes moves it somewhere the classifier likes less —
+        // measured, it cost menu_items 0.470 -> 0.388. So keep BOTH the coarse
+        // box and its refined neighbour and let the classifier choose, rather
+        // than deciding on a proxy for the thing we actually care about.
+        var finalists: [(score: Double, x: Int, y: Int, w: Int, h: Int)] = []
+        for candidate in kept.prefix(refinedShortlist) {
+            finalists.append(candidate)
+            var refined = candidate
+            for scale in alignmentScales {
+                let w = Int((Double(candidate.w) * scale).rounded())
+                let h = Int((Double(candidate.h) * scale).rounded())
+                guard w >= 8, h >= 8, w <= width, h <= height else { continue }
+                for dx in alignmentOffsets {
+                    for dy in alignmentOffsets {
+                        let x = candidate.x + dx
+                        let y = candidate.y + dy
+                        guard x >= 0, y >= 0, x + w <= width, y + h <= height else { continue }
+                        if let score = shapeScore(x, y, w, h), score > refined.score {
+                            refined = (score, x, y, w, h)
+                        }
+                    }
+                }
+            }
+            // Only worth a second classifier call if it actually moved.
+            if refined.x != candidate.x || refined.y != candidate.y || refined.w != candidate.w {
+                finalists.append(refined)
+            }
+        }
+        kept = finalists
 
         // --- Stage 2: confirm with feature prints -----------------------------
         let positivePrints = prototype.positives.compactMap { $0.featurePrint.flatMap(FeaturePrint.decode) }

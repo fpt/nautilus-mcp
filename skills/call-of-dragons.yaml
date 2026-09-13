@@ -25,6 +25,14 @@ house_rules:
       overlay would. See check_who_receives_a_key in visual-prototypes.yaml.
     severity: critical
 
+  - id: confirm_is_left_cancel_is_right
+    rule: >
+      In this game's confirmation dialogs 確定 (confirm) is the LEFT button and
+      キャンセル is the RIGHT one, and 確定 is often red — the colour does not
+      mean "danger", it is just the affirmative. Seen on the quit-game prompt
+      and on the merchant's refresh prompt. Read the label; never pick by side
+      or colour alone.
+
   - id: buttons_are_short_taps
     rule: >
       UI buttons respond to a short tap. A long press on a button does not
@@ -205,7 +213,7 @@ daily_challenges:
     - {title: 白銀の宝箱×5を開ける,                   satisfied_by: open_silver_chests}
     - {title: 闇の宝箱×1を開ける,                     satisfied_by: not yet discovered}
     - {title: 1,000ユニットを治療する,                 satisfied_by: cure_troops_at_hospital, note: still unverified}
-    - {title: ブラックマーケットで商品を10回購入する,   satisfied_by: not yet discovered}
+    - {title: ブラックマーケットで商品を10回購入する,   satisfied_by: buy_from_goblin_merchant, note: "resource-priced items only; expect several merchant visits"}
     - {title: 木材増産アイテムを使用する,              satisfied_by: not yet discovered}
     - {title: テクノロジーの研究を1回完了する,          skip: true, reason: "research in the queue runs 19+ days; not completable in a day"}
     - {title: Lv.2以上のユニット×2,000を訓練する,      skip: true, reason: "depends on training queue progress; a batch was 6h33m from done"}
@@ -528,6 +536,79 @@ skills:
         keys 1,169 -> 1,165 for five chests: the first used the day's free pull
         and the next four cost one key each.
 
+  - name: buy_from_goblin_merchant
+    verified: true
+    description: >
+      Buy from the black market merchant, which advances the
+      "ブラックマーケットで商品を10回購入する" daily.
+    cost_policy: >
+      Buy ONLY items priced in resources, never in gems. Resource prices carry a
+      gold-coin or wood icon and run in the tens or hundreds of thousands; gem
+      prices carry the red gem icon and are small numbers (11 to 2,400). The
+      numbers alone are a decent tell but the icon is the real one.
+    availability: >
+      The merchant is not always present — it depends on the time and on
+      progress. When it is, its stall in the city carries a floating money-bag
+      marker, and the shop shows a 残り時間 countdown for how long it stays.
+    procedure:
+      - action: skill
+        skill: toggle_city_and_map
+        note: the merchant is a city structure; this must be done from the city
+      - action: tap
+        target: the stall under the floating money-bag marker
+        note: >
+          Position depends on your own city layout, so there is no portable
+          coordinate. Find the money-bag marker and tap the structure BELOW it,
+          not the marker. Alternatively reach it by GO from the daily challenge
+          list, which navigates there directly.
+      - action: observe
+        expect: >
+          a radial menu appears, labelled ブラックマーケット, with three circular
+          buttons
+      - action: tap
+        target: the RIGHTMOST circular button, a gold coin
+        note: >
+          That one is the merchant. The left button is information and the lower
+          one is an exchange.
+      - action: observe
+        expect: >
+          the ゴブリン商人 shop: a 残り時間 countdown, a 更新回数 refresh counter,
+          and a grid of items
+      - action: for_each_row
+        note: >
+          16 items every visit, fixed, laid out four to a row across four
+          sections (資源 / 加速 / バフ / その他). Only two rows fit on screen —
+          swipe up within the shelves to reach the rest.
+        do: >
+          tap the price button of any item priced in RESOURCES. A purchase takes
+          one tap and asks for no confirmation; the button turns 完売.
+      - action: tap
+        target: the refresh button, upper right beside 更新回数
+        note: >
+          Free ONCE per merchant visit — it reads 無料, and afterwards the
+          counter drops (5/5 -> 4/5) and the price becomes 100 gems. Do not
+          refresh a second time.
+      - action: confirm
+        note: >
+          A dialog warns that unpurchased stock is lost. 確定 is the LEFT button.
+          Harmless once every resource-priced item has been bought, which is why
+          this step comes last.
+      - action: repeat
+        note: buy the resource-priced items of the new stock as above
+    verify:
+      method: complete_daily_challenges
+      expect: the ブラックマーケット row's counter has advanced by the number bought
+      measured: >
+        0/10 -> 6/10. Three resource-priced items in the first stock
+        (120,000 / 35,000 / 300,000) and three after the free refresh
+        (105,000 / 35,000 / 120,000). Gem balance unchanged at 21,214
+        throughout, confirming nothing premium was spent.
+    limits: >
+      How many of the 16 are resource-priced is random — six across two stocks
+      here. With one free refresh per visit the daily's ten purchases usually
+      cannot be finished from a single visit without spending gems, so expect to
+      return when the merchant next appears.
+
   - name: check_marches
     verified: true
     description: >
@@ -638,17 +719,42 @@ skills:
 
   # -------------------------------------------------------------------------
   - name: collect_city_resource
-    verified: false
-    status: not attempted this session
+    verified: true
     description: >
-      In the city, tap a floating resource marker above a production building to
-      collect it. Four kinds exist, one per resource.
-    hints_observed:
-      - >
-        In city view, circular markers with a resource glyph (a gold coin among
-        them) float over buildings in the lower-left cluster, around
-        x 0.18-0.36, y 0.40-0.56.
-      - expected verification is the matching counter in the top bar increasing
+      Collect the accumulated output of the city's production buildings. Four
+      resource kinds, and — the part that matters — **four taps in total**, not
+      one per building.
+    key_fact: >
+      Tapping ANY ONE marker of a kind collects EVERY marker of that kind at
+      once. A dozen bubbles do not need a dozen taps; pick one of each kind and
+      the rest of that kind vanish with it.
+    procedure:
+      - action: skill
+        skill: toggle_city_and_map
+        note: must be in the city
+      - action: identify
+        note: >
+          Production buildings carry floating white circular bubbles, each with
+          a resource glyph. The four are a gold coin, a wooden log, a grey
+          stone, and a blue potion (mana). Their position depends on your own
+          city layout, so locate them by eye — crop the cluster and read the
+          glyphs rather than trusting a coordinate.
+      - action: tap
+        target: any one bubble of the first kind
+      - action: repeat
+        note: once for each of the other three kinds
+    verify:
+      expect: >
+        every bubble of that kind disappears across the whole city — that, not
+        the counters, is the signal
+      note: >
+        The top-bar totals are rounded to 億 (hundreds of millions), so a
+        collection worth a few hundred thousand does not move them at all.
+        Reading them to confirm a collection will look like nothing happened.
+      measured: >
+        four taps at (0.256,0.426) mana, (0.306,0.482) ore, (0.347,0.543) gold,
+        (0.399,0.602) wood cleared every bubble in the cluster; the building
+        timers underneath became visible where the bubbles had been.
 
   - name: cure_troops_at_hospital
     verified: false

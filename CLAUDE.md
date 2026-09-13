@@ -327,24 +327,81 @@ Accessibility for Safari and Chrome alike. So these speak in
 `button named "Sign in"`, and a skill survives a site restyling its markup as
 long as the accessible semantics hold. No per-site icon learning at all.
 
-The backend is hidden: every element reports a `source` (`ax` today), so a CDP
-backend could be added for Chrome without any skill above noticing. The
-container-based `chromedp-container-mcp` is a separate project and is not wired
-in here — nautilus drives the real browser window on screen, with its real
-cookies and sessions.
+The backend is hidden: every element reports a `source` — `ax` for macOS
+Accessibility, `cdp` for Chrome's DevTools protocol — so a skill does not know
+or care which answered. `BrowserRouter` picks: Safari and Edge go to AX, Chrome
+goes to CDP, and actions follow whichever backend served the last `observe`,
+because the ids they carry were minted there. The container-based
+`chromedp-container-mcp` is a separate project and is not wired in here —
+nautilus drives the real browser window on screen, with its real cookies and
+sessions.
 
-**Accessibility permission is required**, granted to the application that
-launches the server — the terminal or MCP client, not the browser — in System
-Settings → Privacy & Security → Accessibility. Without it the browser tools are
-not advertised at all and the reason is logged at startup. The symptom when it
-is missing is `kAXErrorAPIDisabled` (-25211) on every read.
+### Chrome closed the Accessibility door, so Chrome gets CDP
+
+Setting `AXManualAccessibility` — the documented way to ask Chromium to build
+its web tree for an assistive client — returns `kAXErrorAttributeUnsupported`
+(-25205) on Chrome 153. The attribute is not merely ignored; it is no longer
+settable. The symptom is not an error but a plausible-looking answer:
+
+```
+browser_observe → 43 elements, every one of them toolbar or tab strip,
+                  no AXWebArea, and url: null
+```
+
+That is the whole page missing while the tool looks like it worked — the same
+class of failure as a stale frame, and the reason the startup log now says so
+out loud when no CDP endpoint is around.
+
+CDP asks the renderer directly and cannot be shut out that way. It is also
+better behaved for actions: scrolling and history are function calls inside the
+page rather than synthesized keystrokes, so **nothing is brought to the front
+and nothing depends on focus** — the opposite of the AX path, which must raise
+the window and fail loudly when it cannot.
+
+```bash
+# Chrome must be started with the port. Since Chrome 136 it also refuses to
+# open it for the default profile, so it needs its own --user-data-dir.
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9222 --user-data-dir="$HOME/.nautilus-chrome"
+
+nautilus-mcp --chrome-cdp auto   # probe 127.0.0.1:9222 (default)
+nautilus-mcp --chrome-cdp 9333   # a different port
+nautilus-mcp --chrome-cdp off    # Accessibility only
+```
+
+That profile requirement is the real cost, and it is worth being honest about:
+the debugged Chrome is **not** the one holding your everyday logins unless you
+point `--user-data-dir` at a profile that does.
+
+**Which tab.** `/json/list` has no "this is the front one" flag and its order is
+not a promise, so the tab is identified by asking the pages themselves —
+`document.visibilityState` is `visible` only for the active tab of a window.
+The choice is cached and rechecked, because scanning nine tabs would otherwise
+mean nine websocket handshakes per call.
+
+**A document between pages reads as an empty one.** `activate` returns when the
+click is delivered, so the next call can land while `document.body` is still
+null: measured here, a click through to iana.org observed as `count: 0` and
+helpfully advised falling back to OCR on an ordinary HTML page. Both backends
+now wait and look again rather than believe the first thin result — it is the
+same hazard as Safari's lazily-built tree, and it gets the same answer.
+
+**Accessibility permission is required for the AX backend**, granted to the
+application that launches the server — the terminal or MCP client, not the
+browser — in System Settings → Privacy & Security → Accessibility. The symptom
+when it is missing is `kAXErrorAPIDisabled` (-25211) on every read.
+
+Either backend is enough to advertise the tools: a Mac with no grant but a
+Chrome on the debug port still gets browser control, and a Mac with the grant
+and no port still drives Safari. Only when neither can serve are the tools
+absent, with the reason logged at startup.
 
 **The web tree is built lazily.** The first read after attaching returned 26
 nodes — Safari's own toolbar and nothing else — where a moment later the same
 window held 397 including 143 links. A thin result with no `AXWebArea` is
 therefore retried once rather than reported as an empty page.
-(`AXManualAccessibility`, which Chrome and Electron apps need, is unsupported on
-Safari and not required there.)
+(`AXManualAccessibility` is unsupported on Safari and not required there — and
+no longer settable on Chrome either, which is why Chrome has its own backend.)
 
 ### Element ids expire, exactly like frame ids
 
@@ -496,6 +553,8 @@ nautilus-mcp/
 ├── swift/Sources/
 │   ├── NautilusMcp/     # executable: args + stdio loop
 │   ├── NautilusKit/     # MCP server + tools
+│   ├── BrowserAX/       # Accessibility backend (Safari, Edge) + shared model
+│   ├── BrowserCDP/      # Chrome over the DevTools protocol
 │   ├── ScreenCapture/   # WindowManager, OCR, ObjectDetector, ScreenPerception
 │   ├── FoundationModelsKit/, AgentCore/, TTS/, Util/
 │   └── NautilusBridge(FFI)/
@@ -530,12 +589,19 @@ binary and `codesign -v` calls it valid.
 on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
 at startup.
 
-**No `browser_` tools**: Accessibility is not granted. The grant belongs to the
-application that *launches* the server — your terminal, or the MCP client —
-not to `nautilus-mcp` itself and not to the browser. Add that application in
-System Settings → Privacy & Security → Accessibility and restart it. Because the
-grant follows the launcher, switching MCP clients means granting again, while
+**No `browser_` tools**: neither backend can serve. For Safari that means
+Accessibility is not granted, and the grant belongs to the application that
+*launches* the server — your terminal, or the MCP client — not to
+`nautilus-mcp` itself and not to the browser. Add that application in System
+Settings → Privacy & Security → Accessibility and restart it. Because the grant
+follows the launcher, switching MCP clients means granting again, while
 reinstalling the server does not.
+
+**`browser_observe` on Chrome returns only the toolbar**: that is the AX
+backend answering because no CDP endpoint was found. Chrome will not expose its
+page through Accessibility at all. Start Chrome with `--remote-debugging-port`
+and its own `--user-data-dir`, then restart the server; the startup log says
+which backends are live.
 
 **No `ask_local_model`**: the on-device model is unavailable (not Apple silicon,
 or Apple Intelligence off). Logged at startup; the tool is simply absent.

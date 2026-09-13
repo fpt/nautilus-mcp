@@ -1,4 +1,5 @@
 import Foundation
+import BrowserCDP
 import NautilusKit
 import ScreenCapture
 import TTS
@@ -41,7 +42,11 @@ func readLineOffMainActor() async -> String? {
     await Task.detached { readLine(strippingNewline: true) }.value
 }
 
-let usage = """
+/// Computed, not stored: top-level code runs `runMain()` as its first
+/// statement, which is *before* a stored global declared further down this file
+/// gets initialized — so `--help` printed one empty line. A computed property
+/// has no initialization order to get wrong.
+var usage: String { """
     nautilus-mcp — a headless MCP server for macOS perception and Android control.
 
     Speaks MCP over stdio; point an MCP client at this binary.
@@ -49,18 +54,25 @@ let usage = """
     Options:
       --android <serial|auto|off>  Which Android device to bind (default: auto).
                                    "off" leaves the android_ tools out entirely.
+      --chrome-cdp <port|auto|off> Drive Chrome over the DevTools protocol
+                                   (default: auto, which probes 127.0.0.1:9222).
+                                   Chrome must be started with
+                                   --remote-debugging-port=<port>; since Chrome
+                                   136 that also requires its own --user-data-dir.
       --voice <identifier>         Voice for the `say` tool.
       --prototypes <dir>           Where learned UI appearances live
                                    (default ./resources, or NAUTILUS_PROTOTYPES).
       --list-tools                 Print the tool names and exit.
       --help                       Show this message.
     """
+}
 
 @MainActor
 func runMain() async {
     var androidSpec: String? = "auto"
     var voice: String? = ProcessInfo.processInfo.environment["NAUTILUS_TTS_VOICE"]
     var listOnly = false
+    var cdpPort: Int? = CDPSession.defaultPort
     var prototypeRoot = ProcessInfo.processInfo.environment["NAUTILUS_PROTOTYPES"]
 
     var args = Array(CommandLine.arguments.dropFirst())
@@ -74,6 +86,18 @@ func runMain() async {
             listOnly = true
         case "--android":
             androidSpec = args.isEmpty ? nil : args.removeFirst()
+        case "--chrome-cdp":
+            let spec = args.isEmpty ? "auto" : args.removeFirst()
+            switch spec {
+            case "off": cdpPort = nil
+            case "auto": cdpPort = CDPSession.defaultPort
+            default:
+                guard let port = Int(spec), (1...65535).contains(port) else {
+                    log("--chrome-cdp wants a port, \"auto\" or \"off\" — got \(spec)")
+                    exit(2)
+                }
+                cdpPort = port
+            }
         case "--voice":
             voice = args.isEmpty ? nil : args.removeFirst()
         case "--prototypes":
@@ -119,16 +143,13 @@ func runMain() async {
         VisualListTool(store: prototypes),
     ]
 
-    // Browser control through Accessibility. Absent entirely without the
-    // permission, with the reason on stderr — the same rule as everything else:
-    // a tool that is listed is a tool that works.
-    let browserTools = makeBrowserTools()
-    tools.append(contentsOf: browserTools.map { Optional($0) })
-    log(
-        browserTools.isEmpty
-            ? "no browser tools: Accessibility permission not granted — grant it to the app that "
-                + "launches this server in System Settings > Privacy & Security > Accessibility"
-            : "browser tools available (\(browserTools.count))")
+    // Browser control, through Accessibility for Safari and through the
+    // DevTools protocol for Chrome. Absent entirely when neither can serve,
+    // with the reason on stderr — the same rule as everything else: a tool that
+    // is listed is a tool that works.
+    let browser = await makeBrowserTools(cdpPort: cdpPort)
+    tools.append(contentsOf: browser.tools.map { Optional($0) })
+    log(browser.summary)
 
     // Offered only where it exists. On a Mac without Apple Intelligence,
     // `make()` answers nil and ask_local_model simply is not in the list.

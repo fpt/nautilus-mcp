@@ -1,4 +1,5 @@
 import BrowserAX
+import BrowserCDP
 import Foundation
 
 /// Browser control through semantics rather than pixels.
@@ -11,15 +12,16 @@ import Foundation
 /// restyling its markup as long as the accessible semantics hold.
 ///
 /// The backend is deliberately hidden. Every element reports where its facts
-/// came from — `ax` today — so a CDP backend could be added for Chrome without
-/// any skill above noticing.
+/// came from — `ax` for macOS Accessibility, `cdp` for Chrome's DevTools
+/// protocol — so a skill written against these tools does not know or care
+/// which one answered. `BrowserRouter` picks; see it for the rule.
 
 // MARK: - browser_observe
 
 @MainActor
 public final class BrowserObserveTool: MCPTool {
-    private let session: BrowserAXSession
-    public init(session: BrowserAXSession) { self.session = session }
+    private let session: any BrowserBackend
+    public init(session: any BrowserBackend) { self.session = session }
 
     public var name: String { "browser_observe" }
     public var description: String {
@@ -49,7 +51,7 @@ public final class BrowserObserveTool: MCPTool {
     }
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
-        let snapshot = try session.observe(
+        let snapshot = try await session.observe(
             preferred: arguments.optionalString("app"),
             limit: arguments.optionalInt("limit") ?? BrowserAXSession.defaultElementLimit,
             interactiveOnly: arguments.bool("interactive_only", default: false))
@@ -70,6 +72,7 @@ public final class BrowserObserveTool: MCPTool {
             "elements": .array(
                 elements.map { Self.describe($0, frames: withFrames) }),
             "count": .number(Double(elements.count)),
+            "backend": .string(session.backendName),
         ]
         payload["url"] = snapshot.url.map { JSONValue.string($0) } ?? .null
         if snapshot.truncated { payload["truncated"] = .bool(true) }
@@ -112,8 +115,8 @@ public final class BrowserObserveTool: MCPTool {
 
 @MainActor
 public final class BrowserActivateTool: MCPTool {
-    private let session: BrowserAXSession
-    public init(session: BrowserAXSession) { self.session = session }
+    private let session: any BrowserBackend
+    public init(session: any BrowserBackend) { self.session = session }
 
     public var name: String { "browser_activate" }
     public var description: String {
@@ -135,7 +138,7 @@ public final class BrowserActivateTool: MCPTool {
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
         let id = try arguments.string("element_id")
         let epoch = UInt64(arguments.optionalInt("page_epoch") ?? Int(session.epoch))
-        try session.activate(id, observedEpoch: epoch)
+        try await session.activate(id, observedEpoch: epoch)
         return MCPToolResult(
             text: "Activated \(id). The page may have changed — browser_observe to see it, and "
                 + "note the ids are renewed each time.")
@@ -146,8 +149,8 @@ public final class BrowserActivateTool: MCPTool {
 
 @MainActor
 public final class BrowserSetValueTool: MCPTool {
-    private let session: BrowserAXSession
-    public init(session: BrowserAXSession) { self.session = session }
+    private let session: any BrowserBackend
+    public init(session: any BrowserBackend) { self.session = session }
 
     public var name: String { "browser_set_value" }
     public var description: String {
@@ -172,7 +175,7 @@ public final class BrowserSetValueTool: MCPTool {
         let id = try arguments.string("element_id")
         let value = try arguments.string("value")
         let epoch = UInt64(arguments.optionalInt("page_epoch") ?? Int(session.epoch))
-        try session.setValue(id, to: value, observedEpoch: epoch)
+        try await session.setValue(id, to: value, observedEpoch: epoch)
         return MCPToolResult(
             text: "Set \(id) to \(value.count) character(s). browser_observe to confirm it took.")
     }
@@ -182,8 +185,8 @@ public final class BrowserSetValueTool: MCPTool {
 
 @MainActor
 public final class BrowserScrollTool: MCPTool {
-    private let session: BrowserAXSession
-    public init(session: BrowserAXSession) { self.session = session }
+    private let session: any BrowserBackend
+    public init(session: any BrowserBackend) { self.session = session }
 
     public var name: String { "browser_scroll" }
     public var description: String {
@@ -206,10 +209,10 @@ public final class BrowserScrollTool: MCPTool {
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
         let raw = (arguments.optionalString("direction") ?? "down").lowercased()
-        guard let direction = BrowserAXSession.ScrollDirection(rawValue: raw) else {
+        guard let direction = BrowserScrollDirection(rawValue: raw) else {
             throw ToolFailure("direction must be down, up, top or bottom — got \(raw.debugDescription)")
         }
-        let text = try session.scroll(
+        let text = try await session.scroll(
             direction, pages: arguments["pages"]?.doubleValue ?? 1,
             preferred: arguments.optionalString("app"))
         return MCPToolResult(text: text + " Observe again: the ids have been renewed.")
@@ -220,8 +223,8 @@ public final class BrowserScrollTool: MCPTool {
 
 @MainActor
 public final class BrowserBackTool: MCPTool {
-    private let session: BrowserAXSession
-    public init(session: BrowserAXSession) { self.session = session }
+    private let session: any BrowserBackend
+    public init(session: any BrowserBackend) { self.session = session }
 
     public var name: String { "browser_back" }
     public var description: String {
@@ -237,24 +240,63 @@ public final class BrowserBackTool: MCPTool {
     }
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
-        let text = try session.goBack(
+        let text = try await session.goBack(
             steps: arguments.optionalInt("steps") ?? 1,
             preferred: arguments.optionalString("app"))
         return MCPToolResult(text: text + " Observe again: the ids have been renewed.")
     }
 }
 
-/// The browser tools, or nothing at all when Accessibility is not granted —
+/// The browser tools, or nothing at all when no backend can serve them —
 /// advertising controls that can only fail is worse than omitting them.
+///
+/// Two independent ways in, and either is enough:
+///
+/// - **Accessibility**, for Safari. Needs the grant, given to the application
+///   that launches this server.
+/// - **CDP**, for Chrome. Needs no grant at all, but Chrome must have been
+///   started with `--remote-debugging-port`.
+///
+/// So a Mac with the port open but no Accessibility grant still gets browser
+/// control, which the old build refused outright.
 @MainActor
-public func makeBrowserTools() -> [MCPTool] {
-    guard BrowserAXSession.isTrusted else { return [] }
-    let session = BrowserAXSession()
-    return [
-        BrowserObserveTool(session: session),
-        BrowserActivateTool(session: session),
-        BrowserSetValueTool(session: session),
-        BrowserScrollTool(session: session),
-        BrowserBackTool(session: session),
+public func makeBrowserTools(cdpPort: Int? = CDPSession.defaultPort) async -> (
+    tools: [MCPTool], summary: String
+) {
+    let ax = BrowserAXSession.isTrusted ? BrowserAXSession() : nil
+    var cdp: CDPSession?
+    if let cdpPort, await CDPSession.isReachable(port: cdpPort) {
+        cdp = CDPSession(port: cdpPort)
+    }
+
+    guard ax != nil || cdp != nil else {
+        return (
+            [],
+            "no browser tools: Accessibility is not granted (grant it to the app that launches "
+                + "this server in System Settings > Privacy & Security > Accessibility), and no "
+                + "Chrome is listening for DevTools"
+                + (cdpPort.map { " on 127.0.0.1:\($0)" } ?? "")
+        )
+    }
+
+    let router = BrowserRouter(ax: ax, cdp: cdp)
+    let tools: [MCPTool] = [
+        BrowserObserveTool(session: router),
+        BrowserActivateTool(session: router),
+        BrowserSetValueTool(session: router),
+        BrowserScrollTool(session: router),
+        BrowserBackTool(session: router),
     ]
+
+    var served: [String] = []
+    if cdp != nil, let cdpPort { served.append("cdp on \(cdpPort) (Chrome)") }
+    if ax != nil { served.append("ax (Safari, Edge)") }
+    // Chrome rejects AXManualAccessibility, so an AX-only setup cannot read a
+    // Chrome page at all. Say so at startup rather than let it look like a bug.
+    if cdp == nil {
+        served.append(
+            "no CDP endpoint, so Chrome pages are unreadable — Chrome answers AX with its "
+                + "toolbar only; start it with --remote-debugging-port to fix that")
+    }
+    return (tools, "browser tools available (\(tools.count)): " + served.joined(separator: "; "))
 }

@@ -69,8 +69,23 @@ public struct BrowserElement: Sendable {
     public var focused: Bool
     /// Screen rectangle, for the rare case a caller needs to fall back to pixels.
     public var frame: CGRect?
-    /// Where the fact came from. Always "ax" today; a CDP backend would say "cdp".
+    /// Where the fact came from: "ax" for macOS Accessibility, "cdp" for
+    /// Chrome's DevTools protocol.
     public var source: String
+
+    public init(
+        id: String, role: String, name: String, value: String?, enabled: Bool, focused: Bool,
+        frame: CGRect?, source: String
+    ) {
+        self.id = id
+        self.role = role
+        self.name = name
+        self.value = value
+        self.enabled = enabled
+        self.focused = focused
+        self.frame = frame
+        self.source = source
+    }
 }
 
 public struct BrowserSnapshot: Sendable {
@@ -80,6 +95,18 @@ public struct BrowserSnapshot: Sendable {
     public var epoch: UInt64
     public var elements: [BrowserElement]
     public var truncated: Bool
+
+    public init(
+        app: String, title: String, url: String?, epoch: UInt64, elements: [BrowserElement],
+        truncated: Bool
+    ) {
+        self.app = app
+        self.title = title
+        self.url = url
+        self.epoch = epoch
+        self.elements = elements
+        self.truncated = truncated
+    }
 }
 
 // MARK: - Session
@@ -94,7 +121,9 @@ public struct BrowserSnapshot: Sendable {
 /// `StaleElementReferenceException`; here it is a structured error saying what
 /// to do next.
 @MainActor
-public final class BrowserAXSession {
+public final class BrowserAXSession: BrowserBackend {
+    public var backendName: String { "ax" }
+
     /// Browsers this knows how to address, in preference order.
     public static let supported: [(name: String, bundleID: String)] = [
         ("Safari", "com.apple.Safari"),
@@ -124,7 +153,7 @@ public final class BrowserAXSession {
     /// Guard against pathological pages. A large document can hold tens of
     /// thousands of nodes and walking all of them helps nobody.
     static let visitLimit = 20000
-    public static let defaultElementLimit = 250
+    public nonisolated static let defaultElementLimit = 250
 
     private var table: [String: AXUIElement] = [:]
     public private(set) var epoch: UInt64 = 0
@@ -182,7 +211,7 @@ public final class BrowserAXSession {
     public func observe(
         preferred: String? = nil, limit: Int = BrowserAXSession.defaultElementLimit,
         interactiveOnly: Bool = false
-    ) throws -> BrowserSnapshot {
+    ) async throws -> BrowserSnapshot {
         let located = try locate(preferred: preferred)
         let chosen = (name: located.name, pid: located.app.processIdentifier)
         let app = located.element
@@ -196,7 +225,7 @@ public final class BrowserAXSession {
         var root = window
         for attempt in 0..<2 {
             if Self.countWebArea(root).hasWebArea || attempt == 1 { break }
-            Thread.sleep(forTimeInterval: 0.6)
+            try? await Task.sleep(nanoseconds: 600_000_000)
             root = Self.value(app, kAXFocusedWindowAttribute).map { $0 as! AXUIElement } ?? root
         }
 
@@ -266,7 +295,7 @@ public final class BrowserAXSession {
     }
 
     /// Activate: press a button, follow a link, toggle a checkbox.
-    public func activate(_ id: String, observedEpoch: UInt64) throws {
+    public func activate(_ id: String, observedEpoch: UInt64) async throws {
         let node = try element(id, observedEpoch: observedEpoch)
         let code = AXUIElementPerformAction(node, kAXPressAction as CFString)
         guard code == .success else { throw BrowserAXError.actionFailed("press \(id)", code) }
@@ -275,7 +304,7 @@ public final class BrowserAXSession {
 
     /// Put text into a field. Focuses first, because some fields ignore a value
     /// written to them while they do not have focus.
-    public func setValue(_ id: String, to text: String, observedEpoch: UInt64) throws {
+    public func setValue(_ id: String, to text: String, observedEpoch: UInt64) async throws {
         let node = try element(id, observedEpoch: observedEpoch)
         AXUIElementSetAttributeValue(node, kAXFocusedAttribute as CFString, true as CFTypeRef)
         let code = AXUIElementSetAttributeValue(
@@ -301,10 +330,9 @@ public final class BrowserAXSession {
 
     // MARK: Navigation and scrolling
 
-    /// Where the page scrolls: `down`/`up` move by viewports, `top`/`bottom` jump.
-    public enum ScrollDirection: String, Sendable {
-        case down, up, top, bottom
-    }
+    /// Kept as a nested name so existing call sites still read
+    /// `BrowserAXSession.ScrollDirection`; the type is shared with the CDP backend.
+    public typealias ScrollDirection = BrowserScrollDirection
 
     /// Scroll the page.
     ///
@@ -318,8 +346,8 @@ public final class BrowserAXSession {
     /// wheel cannot express "as far as it goes".
     @discardableResult
     public func scroll(
-        _ direction: ScrollDirection, pages: Double = 1, preferred: String? = nil
-    ) throws -> String {
+        _ direction: BrowserScrollDirection, pages: Double = 1, preferred: String? = nil
+    ) async throws -> String {
         let located = try locate(preferred: preferred)
         let front = Self.bringForward(located)
 
@@ -374,7 +402,7 @@ public final class BrowserAXSession {
     /// "戻る" — and searching the window for it finds the *page's* toolbar
     /// first, which on GitHub is a row of issue filters.
     @discardableResult
-    public func goBack(steps: Int = 1, preferred: String? = nil) throws -> String {
+    public func goBack(steps: Int = 1, preferred: String? = nil) async throws -> String {
         let located = try locate(preferred: preferred)
         guard Self.bringForward(located) else {
             throw BrowserAXError.actionFailed(

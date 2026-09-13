@@ -26,7 +26,7 @@ let package = Package(
         // lives in NautilusKit, so the protocol and the tools stay testable.
         .executableTarget(
             name: "NautilusMcp",
-            dependencies: ["NautilusKit"],
+            dependencies: ["NautilusKit", "BrowserCDP"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // MCP protocol handling plus the tool implementations.
@@ -34,6 +34,7 @@ let package = Package(
             name: "NautilusKit",
             dependencies: [
                 "ScreenCapture", "TTS", "NautilusBridge", "FoundationModelsKit", "BrowserAX",
+                "BrowserCDP",
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
@@ -68,6 +69,15 @@ let package = Package(
         .target(
             name: "BrowserAX",
             dependencies: [],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Chrome through the DevTools protocol. Separate from BrowserAX
+        // because it needs no Accessibility grant at all — it talks to the
+        // renderer over a socket, which is why it still works where Chrome's
+        // AXManualAccessibility no longer does.
+        .target(
+            name: "BrowserCDP",
+            dependencies: ["BrowserAX"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(

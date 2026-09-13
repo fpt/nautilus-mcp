@@ -36,6 +36,9 @@ MCP client (Claude Code, …)
 | `image_crop` | cut a region out as a new frame |
 | `image_regions` | propose areas worth inspecting |
 | `image_diff` | what changed between two frames |
+| `visual_learn` | remember how a UI element looks |
+| `visual_find` | find a learned element again, without OCR |
+| `visual_list` | what has been learned |
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are

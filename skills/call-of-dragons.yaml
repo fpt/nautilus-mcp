@@ -59,12 +59,35 @@ house_rules:
       tightly: observe, locate the button, tap, verify, repeat.
     severity: high
 
-  - id: ignore_controller_overlays
+  - id: prefer_visual_over_ocr
     rule: >
-      The "L1" and "R1" glyphs in the lower corners are drawn by the Retroid
-      Pocket's key-binding app, NOT by the game. They are device-specific, they
-      pollute OCR, and they will not exist on another device. Never key a skill
-      off them — describe the game's own icon underneath.
+      Use OCR to work out what something IS, once. After that, learn its
+      appearance with visual_learn and find it with visual_find. OCR of this
+      game's stylized Japanese is unreliable — it read ペット as ミツ at 0.3
+      confidence — while a learned icon matches to within a few pixels and does
+      not care about the font, the language, or the scene behind it.
+      Judge a visual_find by its margin over the runner-up, not by the absolute
+      score: a solid match here scores 0.3-0.5 while other icons in the same row
+      score 0.08-0.16.
+    evidence: >
+      taught the アイテム icon, then across the six-icon menu row: アイテム 0.383,
+      every other icon 0.082-0.159
+
+  - id: some_controls_change_with_state
+    rule: >
+      A control can be drawn differently depending on its own state. The
+      lower-right menu emblem scored 0.436 with its menu open and 0.11 with it
+      closed — the same button, a different picture. Learn both looks into the
+      same prototype rather than assuming a miss means the button is gone.
+
+  - id: device_overlays_are_not_game_ui
+    rule: >
+      Beware of overlays drawn by other apps. This device previously ran the
+      Retroid Pocket key-binding app, which painted "L1"/"R1" glyphs over the
+      lower corners — not game UI, device-specific, and OCR noise. They have
+      since been removed, revealing the game's own icons: a CASTLE emblem lower
+      left (city toggle) and a CIRCULAR emblem lower right (main menu). Never
+      key a skill off anything another app might be drawing.
 
   - id: verify_by_state_not_by_tap
     rule: >
@@ -90,6 +113,23 @@ state_detection:
     lower-left toggle icon looks identical in both states.
 
 # ---------------------------------------------------------------------------
+# Appearances learned with visual_learn, stored under resources/farlight_cod/.
+# Each holds the crop it was taught from and a 64x64 monochrome edge sketch, so
+# what the matcher believes can be looked at.
+# ---------------------------------------------------------------------------
+visual_prototypes:
+  - id: farlight_cod/city_toggle
+    semantic: castle emblem, lower left — enters and leaves the city
+    measured: {score: 0.308, error: 0.003, took_ms: 96}
+  - id: farlight_cod/menu_toggle
+    semantic: circular emblem, lower right — opens the main menu
+    measured: {score: 0.436, error: 0.006, took_ms: 56}
+    caveat: looks different while its menu is open
+  - id: farlight_cod/menu_items
+    semantic: アイテム icon in the main menu bar
+    measured: {score: 0.470, error: 0.008, took_ms: 111}
+
+# ---------------------------------------------------------------------------
 skills:
 
   - name: toggle_city_and_map
@@ -98,10 +138,14 @@ skills:
     preconditions: [no modal panel open]
     procedure:
       - action: tap
-        target: {x: 0.047, y: 0.925}
+        target:
+          semantic: city_toggle
+          visual:
+            prototype: farlight_cod/city_toggle
+          fallback: {x: 0.047, y: 0.925}
         note: >
-          The crest-shaped icon in the lower-left corner. It is a toggle — the
-          same icon in both directions.
+          The castle emblem in the lower-left corner. It is a toggle — the same
+          icon in both directions.
       - action: wait
         seconds: 2.5
       - action: observe
@@ -117,11 +161,16 @@ skills:
       heroes). Tapping the same icon again closes it.
     procedure:
       - action: tap
-        target: {x: 0.959, y: 0.916}
+        target:
+          semantic: menu_toggle
+          visual:
+            prototype: farlight_cod/menu_toggle
+          fallback: {x: 0.959, y: 0.916}
         note: >
-          The crest-shaped icon in the lower-right corner, mirroring the
-          city/map toggle. NOT the gauntlet icon at x~0.89, which is something
-          else and carries its own badge.
+          The circular emblem in the lower-right corner, mirroring the city
+          toggle. NOT the gauntlet icon at x~0.89, which is something else and
+          carries its own badge. Its appearance differs while the menu is open —
+          see some_controls_change_with_state.
       - action: wait
         seconds: 2
     verify:
@@ -136,8 +185,10 @@ skills:
       - {label: アイテム, x: 0.819}
       - {label: 英雄,     x: 0.892}
     note: >
-      OCR of these labels is low-confidence (0.3-0.5) because of the stylized
-      font, but their positions are stable and correct. Match loosely.
+      OCR of these labels is unreliable — ペット reads as ミツ — but their
+      positions are stable. Prefer learning each icon with visual_learn; the
+      icon sits at y~0.945, its label at y~0.97, and matching the icon is both
+      language-independent and far more accurate than reading the label.
 
   - name: deploy_troops_to_vacant_tile
     verified: true

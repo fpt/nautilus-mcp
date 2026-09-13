@@ -50,6 +50,8 @@ let usage = """
       --android <serial|auto|off>  Which Android device to bind (default: auto).
                                    "off" leaves the android_ tools out entirely.
       --voice <identifier>         Voice for the `say` tool.
+      --prototypes <dir>           Where learned UI appearances live
+                                   (default ./resources, or NAUTILUS_PROTOTYPES).
       --list-tools                 Print the tool names and exit.
       --help                       Show this message.
     """
@@ -59,6 +61,7 @@ func runMain() async {
     var androidSpec: String? = "auto"
     var voice: String? = ProcessInfo.processInfo.environment["NAUTILUS_TTS_VOICE"]
     var listOnly = false
+    var prototypeRoot = ProcessInfo.processInfo.environment["NAUTILUS_PROTOTYPES"]
 
     var args = Array(CommandLine.arguments.dropFirst())
     while let arg = args.first {
@@ -73,6 +76,8 @@ func runMain() async {
             androidSpec = args.isEmpty ? nil : args.removeFirst()
         case "--voice":
             voice = args.isEmpty ? nil : args.removeFirst()
+        case "--prototypes":
+            prototypeRoot = args.isEmpty ? nil : args.removeFirst()
         default:
             log("unknown option \(arg)")
             print(usage)
@@ -89,6 +94,10 @@ func runMain() async {
     // Shared by every capture and every image operation: observe once, then
     // crop/OCR/diff without pushing the picture back across the protocol.
     let frames = FrameStore()
+    // Learned UI appearances. Defaults to ./resources so a checkout carries its
+    // own prototypes; the directory is created on the first visual_learn.
+    let prototypes = PrototypeStore(
+        root: URL(fileURLWithPath: prototypeRoot ?? "resources", isDirectory: true))
     // `nil` entries are capabilities this Mac lacks; the server drops them so
     // the tool list describes what actually works here.
     var tools: [MCPTool?] = [
@@ -102,6 +111,11 @@ func runMain() async {
         ImageCropTool(store: frames),
         ImageRegionsTool(store: frames),
         ImageDiffTool(store: frames),
+        // Visual recognition: OCR discovers what a thing is once, these find it
+        // again afterwards without depending on font or language.
+        VisualLearnTool(frames: frames, store: prototypes),
+        VisualFindTool(frames: frames, store: prototypes),
+        VisualListTool(store: prototypes),
     ]
 
     // Offered only where it exists. On a Mac without Apple Intelligence,

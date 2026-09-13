@@ -131,6 +131,9 @@ one decision is the thing the cache exists to stop.
 | `image_regions` | candidate areas: `text_like`, `rectangle`, `salient` |
 | `image_diff` | what changed between two frames |
 | `android_tap_region` | tap a region's centre — sugar over `android_tap` |
+| `visual_learn` | remember how an element looks, as an edge sketch + feature print |
+| `visual_find` | find a learned element again, without OCR |
+| `visual_list` | what has been learned so far |
 
 They are source-agnostic: the same four work on an Android screenshot and a
 macOS window.
@@ -150,6 +153,59 @@ the same frame, `ocr → bbox → tap` composes with **no conversion step at all
 Verified against the live game: a 147x48 crop at root `x 0.890-1.0,
 y 0.052-0.116`, OCRed, returned boxes at `x 0.910-0.988, y 0.076-0.094` — root
 coordinates. Crop-local ones would have read about `0.17, 0.38`.
+
+### Visual recognition — OCR discovers, appearance recognises
+
+`image_ocr` is for working out what something *is*, once. After that,
+`visual_learn` remembers how it looks and `visual_find` finds it again, with no
+dependence on font, language, or the scene behind it.
+
+That matters here: OCR of this game's stylized Japanese read ペット as ミツ at
+0.3 confidence, while the learned icon matches to within a few pixels.
+
+```
+first sighting :  observe -> image_ocr -> "this is 進軍" -> visual_learn
+afterwards     :  observe -> visual_find -> tap -> verify
+uncertain      :  fall back to image_ocr, then visual_learn the new look
+```
+
+**What is stored.** Under `resources/<set>/<name>/`: the crop it was taught
+from, a **64x64 monochrome edge sketch**, and `prototype.json`. Edges rather
+than pixels, because a game button sits on a 3D scene that differs every frame,
+its fill animates, badges overlap it, and it rescales with resolution — the
+outline survives all of that. The PNGs are written so a human can look at what
+the matcher believes; matching itself reads only the JSON.
+
+**How a match is found**, in two stages:
+
+| | |
+|---|---|
+| propose, cheaply | slide a window of the prototype's aspect over one luminance buffer, scoring by normalized cross-correlation — array arithmetic after a single CoreGraphics draw |
+| confirm, expensively | take the best few and compare with `VNGenerateImageFeaturePrintRequest`, which is what distinguishes this button from its neighbour |
+
+Hard negatives are subtracted at the end, because a game's icons resemble each
+other and "similar enough" is not "the right one".
+
+**`VNClassifyImageRequest` is the wrong API** for this and was tried: asked
+about a UI button it answers `blue_sky 0.30` — it classifies natural images
+into a fixed taxonomy and knows nothing of an application's widgets. The
+feature print is the right one: the same button rescaled scores 0.19, two
+different buttons about 1.0.
+
+**A prototype records the size it was learned at**, relative to the frame, and a
+search sweeps around that. Guessing the size from the search region's own width
+fails as soon as that region is an odd shape — a wide, short strip made every
+candidate window larger than the icon being looked for, and nothing matched.
+
+**Read the margin, not the score.** Scores are relative. Measured on the game's
+six-icon menu row, the taught icon scored 0.383 and every other icon
+0.082-0.159, so a good match is ~0.3-0.5 and the default floor is 0.25. A high
+floor throws away real hits: 0.35 rejected a match that had localised to within
+three thousandths of the right spot.
+
+**A control can change appearance with its own state.** The lower-right menu
+emblem scored 0.436 with its menu open and 0.11 with it closed — the same
+button, a different picture. Learn both looks into one prototype.
 
 ### `image_regions` says where, never what
 

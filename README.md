@@ -39,6 +39,8 @@ MCP client (Claude Code, …)
 | `visual_learn` | remember how a UI element looks |
 | `visual_find` | find a learned element again, without OCR |
 | `visual_list` | what has been learned |
+| `android_read_text` | capture and read the screen's text in one call |
+| `android_look_for` | capture and locate a learned element in one call |
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are

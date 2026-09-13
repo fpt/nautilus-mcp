@@ -36,6 +36,47 @@ enum FrameArgs {
     }
 }
 
+/// Read text in an area of a frame, with every box projected into root
+/// coordinates. Shared by `image_ocr` and `android_read_text`, so the two
+/// cannot drift apart.
+@MainActor
+enum TextReader {
+    static func read(
+        frame: Frame, area: NormRect?, languages: [String], floor: Double
+    ) throws -> [JSONValue] {
+        let target = area ?? .full
+        guard let pixels = frame.pixels(in: target) else {
+            throw ToolFailure("that region does not overlap frame \(frame.id)")
+        }
+        let entries = try performOCR(on: pixels, languages: languages)
+        // OCR ran on the cut-out pixels, so its boxes are local to that cut.
+        // Project through the searched area, then through the frame's own
+        // placement, so the caller only ever sees root coordinates.
+        return
+            entries
+            .filter { Double($0.confidence) >= floor }
+            .map { entry in
+                let local = NormRect(
+                    x1: entry.x, y1: entry.y,
+                    x2: entry.x + entry.width, y2: entry.y + entry.height)
+                let root = frame.toRoot(target.project(local))
+                return JSONValue.object([
+                    "text": .string(entry.text),
+                    "confidence": .number((Double(entry.confidence) * 100).rounded() / 100),
+                    "bbox": root.json,
+                ])
+            }
+    }
+
+    static func languages(from arguments: [String: JSONValue]) -> [String] {
+        if case .array(let list)? = arguments["languages"] {
+            let parsed = list.compactMap(\.stringValue)
+            if !parsed.isEmpty { return parsed }
+        }
+        return ["en-US", "ja"]
+    }
+}
+
 // MARK: - image_ocr
 
 /// Read text, with every box in root coordinates.
@@ -68,47 +109,21 @@ public final class ImageOCRTool: MCPTool {
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
         let (frame, area) = try FrameArgs.resolve(arguments, in: store)
-        let target = area ?? .full
-
-        guard let pixels = frame.pixels(in: target) else {
-            throw ToolFailure("that region does not overlap frame \(frame.id)")
-        }
-        var languages = ["en-US", "ja"]
-        if case .array(let list)? = arguments["languages"] {
-            let parsed = list.compactMap(\.stringValue)
-            if !parsed.isEmpty { languages = parsed }
-        }
-        let floor = arguments["min_confidence"]?.doubleValue ?? 0
-
-        let entries = try performOCR(on: pixels, languages: languages)
-        // OCR ran on the cut-out pixels, so its boxes are local to that cut.
-        // Project through the searched area, then through the frame's own
-        // placement, so the caller only ever sees root coordinates.
-        let items =
-            entries
-            .filter { Double($0.confidence) >= floor }
-            .map { entry -> JSONValue in
-                let local = NormRect(
-                    x1: entry.x, y1: entry.y,
-                    x2: entry.x + entry.width, y2: entry.y + entry.height)
-                let root = frame.toRoot(target.project(local))
-                return .object([
-                    "text": .string(entry.text),
-                    "confidence": .number((Double(entry.confidence) * 100).rounded() / 100),
-                    "bbox": root.json,
-                ])
-            }
+        let items = try TextReader.read(
+            frame: frame, area: area,
+            languages: TextReader.languages(from: arguments),
+            floor: arguments["min_confidence"]?.doubleValue ?? 0)
 
         guard !items.isEmpty else {
             return MCPToolResult(
                 text: "No text found in \(frame.summary)"
                     + (area == nil ? "." : " within that region."))
         }
-        let payload = try JSONValue.object([
-            "frame_id": .string(frame.id),
-            "items": .array(items),
-        ]).serialized()
-        return MCPToolResult(text: payload)
+        return MCPToolResult(
+            text: try JSONValue.object([
+                "frame_id": .string(frame.id),
+                "items": .array(items),
+            ]).serialized())
     }
 }
 
@@ -292,8 +307,10 @@ public final class ImageDiffTool: MCPTool {
     }
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
-        let a = try store.require(try arguments.string("frame_a"))
-        let b = try store.require(arguments.optionalString("frame_b"))
+        // Explicitly stale-tolerant: comparing a frame from before an action
+        // with one from after is the entire point of this tool.
+        let a = try store.require(try arguments.string("frame_a"), allowStale: true)
+        let b = try store.require(arguments.optionalString("frame_b"), allowStale: true)
         guard a.id != b.id else {
             throw ToolFailure("frame_a and frame_b are the same frame (\(a.id))")
         }

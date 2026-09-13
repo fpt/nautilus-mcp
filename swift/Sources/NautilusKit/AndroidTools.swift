@@ -33,9 +33,22 @@ public final class AndroidTool: MCPTool {
         self.schema = (try? JSONValue.parse(spec.inputSchema)) ?? .objectSchema(properties: [:])
     }
 
+    /// Android tools that only look. Everything else is assumed to change the
+    /// world, so a primitive added to the Rust side later is stale-safe without
+    /// anyone remembering to list it here.
+    ///
+    /// `android_wait` is deliberately NOT in this set: animations play and
+    /// creatures walk while nothing is being pressed, so a frame from before a
+    /// wait is just as out of date as one from before a tap.
+    private static let observational: Set<String> = ["android_observe", "android_info"]
+
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
         let argsJson = try JSONValue.object(arguments).serialized()
         let output = try controller.call(name: spec.name, argsJson: argsJson)
+
+        if !Self.observational.contains(spec.name) {
+            store?.worldChanged()
+        }
 
         var text = output.text
         let images = output.images.map { MCPImage(base64: $0.base64, mimeType: $0.mediaType) }
@@ -98,6 +111,7 @@ public final class AndroidTapRegionTool: MCPTool {
             "x": .number(centre.x1), "y": .number(centre.y1),
         ]).serialized()
         let output = try controller.call(name: "android_tap", argsJson: args)
+        store.worldChanged()
         return MCPToolResult(text: output.text)
     }
 }

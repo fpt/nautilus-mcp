@@ -95,12 +95,16 @@ house_rules:
       left (city toggle) and a CIRCULAR emblem lower right (main menu). Never
       key a skill off anything another app might be drawing.
 
-  - id: ocr_reads_the_last_frame_not_the_screen
+  - id: observations_expire
     rule: >
-      image_ocr and the other image tools work on the most recently CAPTURED
-      frame, not on what is on screen now. After any action, android_observe
-      first or you will read the state you had before you acted. This misleads
-      silently — the numbers look plausible, they are just stale.
+      The harness now enforces this, so it is a rule about which tool to reach
+      for rather than one to remember: every action advances an interaction
+      epoch, and reading a frame captured before it is refused with
+      {"error": "stale_frame", ...}. Prefer android_read_text and
+      android_look_for, which capture first and cannot be stale. Reach for
+      android_observe + image_ocr only when you want several readings of one
+      frame, or image_diff, which is deliberately allowed to read an old frame
+      because comparing before with after is its purpose.
 
   - id: wait_for_animations_before_the_next_tap
     rule: >

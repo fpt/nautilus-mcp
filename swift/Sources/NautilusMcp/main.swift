@@ -135,6 +135,13 @@ func runMain() async {
         do {
             let androidTools = try makeAndroidTools(serial: requested, store: frames)
             tools.append(contentsOf: androidTools)
+            // Perception that captures for you, so "what is on screen" can never
+            // be answered from a frame taken before the last action.
+            if let observe = androidTools.first(where: { $0.name == "android_observe" }) {
+                tools.append(AndroidReadTextTool(observe: observe, frames: frames))
+                tools.append(
+                    AndroidLookForTool(observe: observe, frames: frames, prototypes: prototypes))
+            }
             log("bound Android device, \(androidTools.count) tool(s)")
         } catch {
             log("no Android tools: \(error.localizedDescription)")

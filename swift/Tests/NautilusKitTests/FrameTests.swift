@@ -224,3 +224,91 @@ final class ImageDecodeTests: XCTestCase {
         XCTAssertNil(ImageCoding.decode(base64: Data("hello".utf8).base64EncodedString()))
     }
 }
+
+/// Observations have a lifetime. A frame captured before an action describes a
+/// world that no longer exists, and reading it returns numbers that look
+/// plausible and are wrong — which is precisely how it misleads. The store
+/// refuses it rather than relying on anyone to remember.
+@MainActor
+final class FrameStalenessTests: XCTestCase {
+    private func makeStore() -> FrameStore { FrameStore() }
+
+    func testAFrameIsReadableUntilTheWorldChanges() throws {
+        let store = makeStore()
+        let frame = store.register(image: makeImage(40, 40), source: "android")
+        XCTAssertEqual(try store.require(frame.id).id, frame.id)
+
+        store.worldChanged()
+        XCTAssertThrowsError(try store.require(frame.id)) { error in
+            let message = (error as? ToolFailure)?.message ?? ""
+            XCTAssertTrue(message.contains("stale_frame"), message)
+            XCTAssertTrue(message.contains("recovery"), message)
+            XCTAssertTrue(message.contains(frame.id), message)
+        }
+    }
+
+    /// The error has to say how far behind it is, not merely that it is behind.
+    func testTheStaleErrorReportsBothEpochs() throws {
+        let store = makeStore()
+        let frame = store.register(image: makeImage(40, 40), source: "android")
+        store.worldChanged()
+        store.worldChanged()
+        do {
+            _ = try store.require(frame.id)
+            XCTFail("a two-actions-old frame should be refused")
+        } catch {
+            let payload = try JSONValue.parse((error as? ToolFailure)?.message ?? "")
+            XCTAssertEqual(payload["error"]?.stringValue, "stale_frame")
+            XCTAssertEqual(payload["captured_epoch"]?.intValue, 0)
+            XCTAssertEqual(payload["current_epoch"]?.intValue, 2)
+            XCTAssertEqual(payload["actions_since"]?.intValue, 2)
+        }
+    }
+
+    /// image_diff exists to compare before with after, so it must be allowed to
+    /// read an old frame.
+    func testStaleFramesAreStillReadableWhenExplicitlyAllowed() throws {
+        let store = makeStore()
+        let frame = store.register(image: makeImage(40, 40), source: "android")
+        store.worldChanged()
+        XCTAssertEqual(try store.require(frame.id, allowStale: true).id, frame.id)
+    }
+
+    func testACaptureAfterTheActionIsFreshAgain() throws {
+        let store = makeStore()
+        _ = store.register(image: makeImage(40, 40), source: "android")
+        store.worldChanged()
+        let newer = store.register(image: makeImage(40, 40), source: "android")
+        XCTAssertEqual(try store.require(newer.id).id, newer.id)
+        XCTAssertEqual(try store.require(nil).id, newer.id)
+    }
+
+    /// A crop is exactly as current as the frame it came from — no fresher, and
+    /// no more stale.
+    func testACropInheritsItsParentsFreshness() throws {
+        let store = makeStore()
+        let parent = store.register(image: makeImage(100, 100), source: "android")
+        let area = NormRect(x1: 0, y1: 0, x2: 0.5, y2: 0.5)
+        let crop = store.registerCrop(of: parent, root: area, image: parent.pixels(in: area)!)
+        XCTAssertEqual(crop.observedEpoch, parent.observedEpoch)
+        XCTAssertNoThrow(try store.require(crop.id))
+
+        store.worldChanged()
+        XCTAssertThrowsError(try store.require(crop.id), "a crop of a stale frame is stale")
+    }
+
+    /// An omitted frame_id must mean "the screen", not "the last thing I made".
+    /// Resolving to the most recent frame would redirect observe -> crop -> ocr
+    /// onto the crop, which reads as a tool failing to see something plainly
+    /// on screen.
+    func testAnOmittedIdMeansTheLastCaptureNotTheLastCrop() throws {
+        let store = makeStore()
+        let capture = store.register(image: makeImage(100, 100), source: "android")
+        let area = NormRect(x1: 0, y1: 0, x2: 0.5, y2: 0.5)
+        let crop = store.registerCrop(of: capture, root: area, image: capture.pixels(in: area)!)
+
+        XCTAssertEqual(store.latest?.id, crop.id, "the crop really is the most recent frame")
+        XCTAssertEqual(store.latestCapture?.id, capture.id)
+        XCTAssertEqual(try store.require(nil).id, capture.id, "an omitted id must skip the crop")
+    }
+}

@@ -134,6 +134,8 @@ one decision is the thing the cache exists to stop.
 | `visual_learn` | remember how an element looks, as an edge sketch + feature print |
 | `visual_find` | find a learned element again, without OCR |
 | `visual_list` | what has been learned so far |
+| `android_read_text` | capture **and** OCR in one call — cannot be stale |
+| `android_look_for` | capture **and** locate a learned element — cannot be stale |
 
 They are source-agnostic: the same four work on an Android screenshot and a
 macOS window.
@@ -206,6 +208,50 @@ three thousandths of the right spot.
 **A control can change appearance with its own state.** The lower-right menu
 emblem scored 0.436 with its menu open and 0.11 with it closed — the same
 button, a different picture. Learn both looks into one prototype.
+
+### Observations have a lifetime
+
+A frame captured before an action describes a world that no longer exists.
+Reading it afterwards returns numbers that look entirely plausible and are
+simply wrong, which is exactly how it misleads — it was got wrong three times in
+one session by the author of the tools.
+
+The fix is not to remember harder. `FrameStore` keeps an **interaction epoch**:
+every device action bumps it, every frame records the value it was captured at,
+and reading an older frame is refused with a machine-readable explanation.
+
+```json
+{"error": "stale_frame", "frame_id": "f12",
+ "captured_epoch": 31, "current_epoch": 32, "actions_since": 1,
+ "recovery": "…capture again with android_observe, or use a tool that captures for you…"}
+```
+
+Three details decide whether this actually helps:
+
+- **Anything that is not `android_observe` or `android_info` advances the
+  epoch.** Defaulting to "changes the world" means a primitive added to the Rust
+  side later is stale-safe without anyone remembering to list it.
+- **`android_wait` advances it too.** Animations play and creatures walk while
+  nothing is being pressed.
+- **`image_diff` is exempt**, because comparing before against after is its
+  whole purpose. It asks for `allowStale`; nothing else does.
+
+### An omitted `frame_id` means the screen, not the last thing you made
+
+`latestCapture` skips crops. Resolving to the most recent *frame* would redirect
+`observe → crop → crop → ocr` onto the second crop, which reads as a tool
+inexplicably failing to see something plainly on screen. `latest` still exists
+and is almost never what a caller wants.
+
+### Acting is a primitive; perceiving is an atomic query
+
+`android_read_text` and `android_look_for` capture first and then answer. They
+are not per-app composites — nothing in them knows what a march or a resource
+node is — they are the same perception the primitives offer with the capture
+folded in, so that "what does the screen say?" stops being bookkeeping.
+
+The primitives remain for when a caller wants several readings of one frame, or
+wants to diff two.
 
 ### `image_regions` says where, never what
 

@@ -150,6 +150,10 @@ public final class Frame {
     /// Where the image came from, e.g. `android` or `macos:Safari`.
     public let source: String
     public let capturedAt: Date
+    /// The world's interaction epoch when this image was captured. A frame from
+    /// an earlier epoch describes a screen that has since been acted upon — see
+    /// [`FrameStore.epoch`].
+    public let observedEpoch: UInt64
     /// This image's placement within the root frame, in root coordinates.
     /// `.full` for a fresh capture.
     public let originRect: NormRect
@@ -158,7 +162,8 @@ public final class Frame {
     public private(set) var regions: [Region] = []
 
     init(
-        id: String, image: CGImage, source: String, originRect: NormRect, rootId: String
+        id: String, image: CGImage, source: String, originRect: NormRect, rootId: String,
+        observedEpoch: UInt64
     ) {
         self.id = id
         self.image = image
@@ -166,6 +171,7 @@ public final class Frame {
         self.capturedAt = Date()
         self.originRect = originRect
         self.rootId = rootId
+        self.observedEpoch = observedEpoch
     }
 
     public var pixelWidth: Int { image.width }
@@ -230,11 +236,42 @@ public final class FrameStore {
     private var nextFrameNumber = 1
     public let capacity: Int
 
+    /// Counts everything that may have changed what is on screen.
+    ///
+    /// **Observations have a lifetime.** A frame captured before a tap describes
+    /// a world that no longer exists, and reading it afterwards yields numbers
+    /// that look perfectly plausible and are simply wrong — which is exactly how
+    /// it misleads. Rather than asking the caller to remember to re-capture,
+    /// every action bumps this counter and every frame records the value it was
+    /// captured at; reading an older frame is then refused by construction.
+    public private(set) var epoch: UInt64 = 0
+
+    /// Record that the world may have moved on.
+    ///
+    /// Called for every device action — including `wait`, because animations run
+    /// and creatures walk while nothing is being pressed.
+    public func worldChanged() {
+        epoch &+= 1
+    }
+
     public init(capacity: Int = FrameStore.defaultCapacity) {
         self.capacity = max(1, capacity)
     }
 
+    /// The most recent frame of any kind, crops included. Rarely what a caller
+    /// wants — see [`latestCapture`].
     public var latest: Frame? { frames.last }
+
+    /// The most recent frame that came from a camera rather than from a crop.
+    ///
+    /// This is what an omitted `frame_id` resolves to. Using "the most recent
+    /// frame" instead silently redirects to the last crop: `observe → crop →
+    /// crop → ocr` would read the second crop rather than the screen, which
+    /// reads as a tool inexplicably failing to find something plainly visible.
+    public var latestCapture: Frame? {
+        frames.last { !$0.isCrop }
+    }
+
     public var count: Int { frames.count }
     public var ids: [String] { frames.map(\.id) }
 
@@ -243,7 +280,8 @@ public final class FrameStore {
         // A freshly captured frame is its own root and covers itself entirely.
         let id = nextId()
         let frame = Frame(
-            id: id, image: image, source: source, originRect: .full, rootId: id)
+            id: id, image: image, source: source, originRect: .full, rootId: id,
+            observedEpoch: epoch)
         append(frame)
         return frame
     }
@@ -251,31 +289,59 @@ public final class FrameStore {
     /// Record a crop as a frame in its own right, remembering where it sits.
     @discardableResult
     public func registerCrop(of parent: Frame, root: NormRect, image: CGImage) -> Frame {
+        // A crop is exactly as current as the frame it came out of.
         let frame = Frame(
             id: nextId(), image: image, source: parent.source, originRect: root,
-            rootId: parent.rootId)
+            rootId: parent.rootId, observedEpoch: parent.observedEpoch)
         append(frame)
         return frame
     }
 
-    /// Look up a frame. A `nil` or empty id means the most recent one, so the
-    /// common `observe` then `ocr` sequence needs no bookkeeping.
+    /// Look up a frame. A `nil` or empty id means the most recent *capture* —
+    /// never a crop, see [`latestCapture`].
     public func frame(_ id: String?) -> Frame? {
-        guard let id, !id.isEmpty else { return latest }
+        guard let id, !id.isEmpty else { return latestCapture }
         return frames.first { $0.id == id }
     }
 
     /// Resolve a frame or explain what went wrong, naming what is available —
     /// an evicted id is otherwise indistinguishable from a typo.
-    public func require(_ id: String?) throws -> Frame {
-        if let frame = frame(id) { return frame }
-        guard !frames.isEmpty else {
+    ///
+    /// Also refuses a frame captured before the last action, unless
+    /// `allowStale` says otherwise. `image_diff` is the one caller that wants an
+    /// old frame: comparing before against after is its whole purpose.
+    public func require(_ id: String?, allowStale: Bool = false) throws -> Frame {
+        guard let frame = frame(id) else {
+            guard !frames.isEmpty else {
+                throw ToolFailure(
+                    "no frames captured yet — call android_observe or macos_capture_window first")
+            }
             throw ToolFailure(
-                "no frames captured yet — call android_observe or macos_capture_window first")
+                "no frame \(id ?? "?"); the store holds \(ids.joined(separator: ", ")) "
+                    + "(only the last \(capacity) are kept)")
         }
-        throw ToolFailure(
-            "no frame \(id ?? "?"); the store holds \(ids.joined(separator: ", ")) "
-                + "(only the last \(capacity) are kept)")
+        if !allowStale, frame.observedEpoch < epoch {
+            throw ToolFailure(staleMessage(frame))
+        }
+        return frame
+    }
+
+    /// Machine-readable, because this is a recoverable condition and the caller
+    /// needs to know exactly what to do about it.
+    private func staleMessage(_ frame: Frame) -> String {
+        let payload = JSONValue.object([
+            "error": .string("stale_frame"),
+            "frame_id": .string(frame.id),
+            "captured_epoch": .number(Double(frame.observedEpoch)),
+            "current_epoch": .number(Double(epoch)),
+            "actions_since": .number(Double(epoch - frame.observedEpoch)),
+            "recovery": .string(
+                "The screen has been acted on since this frame was captured, so anything read "
+                    + "from it describes a world that no longer exists. Capture again with "
+                    + "android_observe, or use a tool that captures for you "
+                    + "(android_read_text, android_look_for)."),
+        ])
+        return (try? payload.serialized()) ?? "stale_frame: \(frame.id)"
     }
 
     private func append(_ frame: Frame) {

@@ -163,6 +163,12 @@ public struct PrototypeSample: Codable, Sendable {
     /// region's own width fails as soon as that region is an odd shape.
     public var width: Double?
     public var height: Double?
+    /// Where on the frame it was when taught. Lets a maintenance check ask
+    /// "has this control moved?", which the search prior cannot answer — the
+    /// prior is a padded box and gets clamped at the frame edge, so its centre
+    /// drifts from the real one near a corner.
+    public var centerX: Double?
+    public var centerY: Double?
     public var learnedAt: String
     /// What the element was reading when it was learned — provenance, not a
     /// matching key.
@@ -218,6 +224,14 @@ public struct Prototype: Codable, Sendable {
         let all = positives.compactMap(\.width).filter { $0 > 0 }.sorted()
         guard !all.isEmpty else { return nil }
         return all[all.count / 2]
+    }
+
+    /// Median position it was taught at, if recorded.
+    public var learnedCenter: (x: Double, y: Double)? {
+        let xs = positives.compactMap(\.centerX).sorted()
+        let ys = positives.compactMap(\.centerY).sorted()
+        guard !xs.isEmpty, !ys.isEmpty else { return nil }
+        return (xs[xs.count / 2], ys[ys.count / 2])
     }
 }
 

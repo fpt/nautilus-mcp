@@ -25,6 +25,31 @@ proves it worked, because in this game almost nothing reports its own success �
 | file | |
 |---|---|
 | `call-of-dragons.yaml` | Skills for コール オブ ドラゴンズ (`com.farlightgames.samo.gp.jp`) |
+| `visual-prototypes.yaml` | App-agnostic: teaching and maintaining learned appearances |
+| `tools/icons.py` | Keeping the prototype store current — see below |
+
+## Keeping icons up to date
+
+A learned appearance is only useful while it still matches the screen. Game
+updates re-skin controls, and some controls look different depending on their
+own state, so the store needs checking.
+
+```bash
+cd skills/tools
+uv run icons.py check farlight_cod        # after a game update
+uv run icons.py learn farlight_cod/march_button --region 0.80,0.84,0.87,0.89
+uv run icons.py learn farlight_cod/march_button --region <look-alike> --negative
+uv run icons.py shot screen.png           # to read coordinates off
+```
+
+It is a plain MCP stdio client over `swift/.build/release/nautilus-mcp`, so it
+can do nothing an agent could not do by calling the tools itself. Stdlib only;
+the PEP 723 header just pins the interpreter for `uv run`.
+
+**Read the drift, not the score.** Scores are relative to what sits behind an
+element — a control over a busy animated corner scores ~0.30 while one on a flat
+panel scores ~0.47, and both are exact. `check` therefore judges by how far a
+match landed from where it was taught.
 
 ## Reading a skill
 

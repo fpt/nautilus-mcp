@@ -14,9 +14,15 @@ app:
 house_rules:
   - id: never_press_back
     rule: >
-      Never send the BACK key. It does not close dialogs — it opens
-      "ゲームを退出しますか?" (quit the game?). If it appears, tap キャンセル
-      (the RIGHT button); 確定 on the left quits.
+      Never send the BACK key while the GAME has focus. It does not close
+      dialogs — it opens "ゲームを退出しますか?" (quit the game?). If it appears,
+      tap キャンセル (the RIGHT button); 確定 on the left quits.
+
+      The qualifier matters: a system dialog on top of the game receives BACK
+      instead. Check first with
+      `adb shell dumpsys window | grep mCurrentFocus` — RealMainActivity means
+      the game would get it, ActionsDialog (the power menu, say) means the
+      overlay would. See check_who_receives_a_key in visual-prototypes.yaml.
     severity: critical
 
   - id: buttons_are_short_taps

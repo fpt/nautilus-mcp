@@ -1,0 +1,168 @@
+# Teaching and maintaining visual prototypes.
+#
+# App-agnostic: this is how to give nautilus-mcp an eye for a UI, and how to
+# keep that eye current as the UI changes. The game-specific results live in
+# call-of-dragons.yaml.
+
+principle: >
+  OCR is for discovering what something IS, once. Appearance matching is for
+  finding it again, every time after that. Stylized game text OCRs badly — this
+  game's ペット reads as ミツ at 0.3 confidence — while a learned icon matches to
+  within a few pixels and does not care about font, language, or the animated
+  3D scene behind the button.
+
+fast_and_slow:
+  fast_path: visual_find -> tap -> verify
+  slow_path: >
+    when visual_find comes back empty or ambiguous: image_ocr to re-establish
+    what is there, then visual_learn the new appearance, then carry on. The slow
+    path is also how a prototype improves — every trip through it adds a sample.
+
+what_to_capture:
+  - rule: Prefer the icon to the whole button.
+    why: >
+      An icon survives a language change and a font change; a label does not.
+      Where a control is "icon above label", learn the icon.
+  - rule: Crop tight to the element, not to the space around it.
+    why: >
+      The surroundings differ every frame — that is the moving 3D scene. Padding
+      teaches the matcher the background instead of the button.
+  - rule: Avoid regions that are flat colour.
+    why: >
+      There is no shape to correlate, and visual_learn refuses them outright.
+  - rule: Learn a look-alike as a negative when two controls sit side by side.
+    why: >
+      A game's icons resemble each other. The margin over the runner-up is what
+      says a match is the RIGHT one, not merely a good one.
+
+skills:
+
+  - name: learn_ui_element
+    verified: true
+    description: Teach nautilus-mcp what a control looks like.
+    procedure:
+      - action: observe
+        note: android_observe or macos_capture_window; both mint a frame.
+      - action: identify
+        note: >
+          Find the element. image_ocr if it has readable text, image_regions if
+          it does not, or image_crop and look at it. This is the one time OCR is
+          the right tool.
+      - action: tool
+        tool: visual_learn
+        args:
+          name: "<set>/<element>, e.g. farlight_cod/march_button"
+          region: the element's box in whole-frame coordinates
+          semantic: what it reads or means — recorded for humans, never matched on
+          kind: button | icon | panel | badge
+      - action: check
+        note: >
+          visual_learn returns the 64x64 edge sketch it stored. LOOK AT IT. If it
+          does not resemble the element, the region was wrong — learn again with
+          a tighter one.
+      - action: verify
+        note: >
+          Capture a NEW frame and visual_find it there. Verifying on the frame it
+          was taught from is circular and proves nothing.
+    verify:
+      expect: >
+        the match lands within ~0.01 of where it was taught, with a margin over
+        the runner-up
+      measured: >
+        three prototypes taught from live game art and found in fresh frames:
+        errors 0.001-0.008, 56-111ms each
+
+  - name: strengthen_a_weak_prototype
+    verified: true
+    description: What to do when a prototype matches poorly or ambiguously.
+    when:
+      - visual_find returns nothing, or a score barely above the floor
+      - the margin over the runner-up is small (< 0.08)
+      - it matches the wrong element
+    procedure:
+      - action: tool
+        tool: visual_learn
+        note: >
+          Learn it AGAIN from a different screen. Positives accumulate; they do
+          not replace. Learning the same control against a different background
+          is what makes it robust.
+      - action: tool
+        tool: visual_learn
+        args: {as: negative}
+        note: >
+          If a specific look-alike keeps winning, learn THAT as a negative. Its
+          similarity is then subtracted, so "close enough" stops being enough.
+      - action: consider
+        note: >
+          A control can look different depending on its own state — the menu
+          emblem scored 0.436 with its menu open and 0.11 with it closed. Learn
+          both looks into the same prototype rather than treating a miss as a
+          bug.
+
+  - name: check_prototypes_are_current
+    verified: true
+    description: >
+      Confirm every stored appearance still matches the live UI. Run it after a
+      game update, or whenever taps start missing.
+    procedure:
+      - action: shell
+        command: uv run skills/tools/icons.py check <set>
+        note: >
+          Captures one frame and searches for every prototype in the set.
+    reads:
+      - "ok — found where it was taught"
+      - "found, but ambiguous — margin is small; teach a negative"
+      - "MOVED or mismatched — it landed somewhere else; look before trusting it"
+      - "NOT FOUND — gone, or re-skinned; relearn it"
+    note: >
+      Judge by DRIFT, not by score. Scores are relative and depend on what sits
+      behind the element: a control over a busy animated corner scores ~0.30
+      while one on a flat panel scores ~0.47, and both are exact. Scoring alone
+      once flagged a prototype "stale" that had landed within 0.002 of the spot
+      it was taught.
+    evidence: >
+      a run flagged menu_items as MOVED (score 0.197, margin 0.023, dx 0.069);
+      an Android system power-menu overlay was covering the screen. Dismissing
+      it returned all three prototypes to ok. A true positive, not a false alarm.
+
+  - name: check_who_receives_a_key
+    verified: true
+    description: >
+      Before sending a key, find out which window has focus. A rule like "never
+      press BACK in this game" is about the GAME receiving it; a system dialog
+      on top changes the answer.
+    procedure:
+      - action: shell
+        command: adb shell dumpsys window | grep mCurrentFocus
+    reads:
+      - "mCurrentFocus=…/RealMainActivity — the game has focus; BACK would offer to quit it"
+      - "mCurrentFocus=ActionsDialog — a system dialog has focus; BACK dismisses that instead"
+    evidence: >
+      the power menu appeared mid-session; with focus on ActionsDialog, BACK
+      dismissed it and returned focus to the game, harmlessly.
+
+tooling:
+  script: skills/tools/icons.py
+  runner: uv
+  commands:
+    - "uv run icons.py shot out.png              capture, to read coordinates off"
+    - "uv run icons.py list                      what has been learned"
+    - "uv run icons.py check [set]               are the prototypes still current?"
+    - "uv run icons.py learn NAME --region x1,y1,x2,y2"
+    - "uv run icons.py learn NAME --from-ocr TEXT --icon-above"
+    - "uv run icons.py learn NAME --region ... --negative"
+  note: >
+    The script is a plain MCP stdio client — it does nothing an agent could not
+    do by calling the tools directly. It exists so a human can keep the store
+    tidy without driving the protocol by hand.
+
+storage:
+  path: resources/<set>/<name>/
+  contents:
+    - prototype.json — samples, feature prints, learned size and position
+    - sample-NNN.png — the crop it was taught from
+    - shape-sample-NNN.png — the 64x64 monochrome edge sketch
+  note: >
+    The PNGs are for looking at. Matching reads only the JSON, so a stale PNG
+    costs nothing — but an edge sketch that does not resemble the element is the
+    quickest sign that a region was wrong.

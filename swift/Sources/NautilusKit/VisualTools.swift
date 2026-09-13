@@ -254,6 +254,7 @@ public final class VisualLearnTool: MCPTool {
             featurePrint: FeaturePrint.compute(pixels).flatMap(FeaturePrint.encode),
             aspect: target.height > 0 ? target.width / target.height : 1,
             width: target.width, height: target.height,
+            centerX: target.centerX, centerY: target.centerY,
             learnedAt: ISO8601DateFormatter().string(from: Date()),
             note: arguments.optionalString("semantic"))
 
@@ -423,17 +424,26 @@ public final class VisualListTool: MCPTool {
                 text: "No prototypes learned yet. Use visual_learn on a region you have "
                     + "identified to create one.")
         }
-        let rows = names.compactMap { name -> JSONValue? in
+        // Built statement by statement: as one literal this defeated the
+        // type checker ("unable to type-check this expression in reasonable time").
+        let rows: [JSONValue] = names.compactMap { name in
             guard let prototype = try? store.load(name) else { return nil }
-            return .object([
-                "name": .string(name),
-                "semantic": prototype.semantic.map { JSONValue.string($0) } ?? .null,
-                "kind": prototype.kind.map { JSONValue.string($0) } ?? .null,
-                "positives": .number(Double(prototype.positives.count)),
-                "negatives": .number(Double(prototype.negatives.count)),
-                "aspect": .number((prototype.aspect * 100).rounded() / 100),
-                "search_prior": prototype.searchPrior?.rect.json ?? .null,
-            ])
+            var row: [String: JSONValue] = [:]
+            row["name"] = .string(name)
+            row["semantic"] = prototype.semantic.map { JSONValue.string($0) } ?? JSONValue.null
+            row["kind"] = prototype.kind.map { JSONValue.string($0) } ?? JSONValue.null
+            row["positives"] = .number(Double(prototype.positives.count))
+            row["negatives"] = .number(Double(prototype.negatives.count))
+            row["aspect"] = .number((prototype.aspect * 100).rounded() / 100)
+            row["search_prior"] = prototype.searchPrior?.rect.json ?? JSONValue.null
+            if let centre = prototype.learnedCenter {
+                let x = (centre.x * 10000).rounded() / 10000
+                let y = (centre.y * 10000).rounded() / 10000
+                row["learned_center"] = .object(["x": .number(x), "y": .number(y)])
+            } else {
+                row["learned_center"] = .null
+            }
+            return .object(row)
         }
         return MCPToolResult(text: try JSONValue.array(rows).serialized())
     }

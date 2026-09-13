@@ -95,6 +95,20 @@ house_rules:
       left (city toggle) and a CIRCULAR emblem lower right (main menu). Never
       key a skill off anything another app might be drawing.
 
+  - id: ocr_reads_the_last_frame_not_the_screen
+    rule: >
+      image_ocr and the other image tools work on the most recently CAPTURED
+      frame, not on what is on screen now. After any action, android_observe
+      first or you will read the state you had before you acted. This misleads
+      silently — the numbers look plausible, they are just stale.
+
+  - id: wait_for_animations_before_the_next_tap
+    rule: >
+      Actions that play an animation hide their buttons while it runs. Opening a
+      chest takes about 3 seconds; tapping again too early hits nothing. Where a
+      counter exists (keys, a progress number), count with it rather than
+      assuming each tap landed.
+
   - id: verify_by_state_not_by_tap
     rule: >
       android_tap reports success whether it hit a button or bare ground. Every
@@ -172,6 +186,25 @@ resource_tabs:
     Gem nodes have to be found on the map by eye, which is why a map-sprite
     prototype is worth having for them. OCR reads 鉄鉱 as 鈇鉱, so match these
     labels loosely or go by position.
+
+# ---------------------------------------------------------------------------
+# What the daily challenges are, and which skill satisfies each. The list is
+# stable day to day; the progress is not.
+# ---------------------------------------------------------------------------
+daily_challenges:
+  reset: shown as a countdown at the top left of the panel, ~16-17h when seen
+  reward_each: 8 rune points, 1 key, and resources; every claim also advances a 0/7 chest track
+  entries:
+    - {title: ゲームにログインする,                    satisfied_by: opening the game, automatic: true}
+    - {title: 500CPを消費する,                        satisfied_by: attack_darkling, note: "CP is the action cost of attacking darklings"}
+    - {title: フィールド採集で木材を200,000採集する,    satisfied_by: auto_farm, note: "run it on 伐採場 (wood)"}
+    - {title: 白銀の宝箱×5を開ける,                   satisfied_by: open_silver_chests}
+    - {title: 闇の宝箱×1を開ける,                     satisfied_by: not yet discovered}
+    - {title: 1,000ユニットを治療する,                 satisfied_by: cure_troops_at_hospital, note: still unverified}
+    - {title: ブラックマーケットで商品を10回購入する,   satisfied_by: not yet discovered}
+    - {title: 木材増産アイテムを使用する,              satisfied_by: not yet discovered}
+    - {title: テクノロジーの研究を1回完了する,          skip: true, reason: "research in the queue runs 19+ days; not completable in a day"}
+    - {title: Lv.2以上のユニット×2,000を訓練する,      skip: true, reason: "depends on training queue progress; a batch was 6h33m from done"}
 
 # ---------------------------------------------------------------------------
 skills:
@@ -403,6 +436,93 @@ skills:
       貯蔵量 1,134,000 and 採集者 なし at X:990 Y:842; the march screen loaded
       31,815 ドラフトホース with 積載量 1,145,340; after 進軍 the panel showed
       5/5 with the new march 採集進軍中 00:00:02.
+
+  - name: complete_daily_challenges
+    verified: true
+    description: >
+      Work the daily challenge list: claim what is finished, and for what is not,
+      jump to the screen that completes it.
+    procedure:
+      - action: tap
+        target: {x: 0.041, y: 0.200}
+        note: >
+          The cream banner on a gold pole, below the player avatar in the
+          upper-left. Neighbours that are NOT it: the chevron at (0.086, 0.075)
+          opens 都市管理 (which contains 都市移転, city relocation — stay away),
+          the gold icon at (0.115, 0.078) is a buff tooltip, and the list icon at
+          (0.039, 0.685) is the build/research/training queues.
+      - action: tap
+        target: {x: 0.078, y: 0.400}
+        note: >
+          The second of three vertical tabs down the left of the quest dialog;
+          it carries a red badge when something is claimable. Lands on
+          タイタンの遺産 with デイリー挑戦 already selected.
+      - action: read
+        note: >
+          Each row is: title, 報酬 icons, progress on the right, and an action
+          button at x~0.843. Scroll the list to enumerate; rows sit about 0.18
+          apart. OCR the titles and progress — Japanese titles come through well
+          enough here, and the fractions are reliable.
+      - action: for_each_row
+        cases:
+          - when: "button reads 受取 (green)"
+            do: tap it — the challenge is finished and this is free reward
+          - when: "button reads GO (blue)"
+            do: >
+              tap GO. It navigates straight to the screen that completes that
+              challenge, so the skill does not need to know where anything lives.
+              Do the thing, come back, and the row will be showing 受取.
+          - when: "row reads クリア済"
+            do: nothing; it is already done and claimed
+      - action: repeat
+        note: >
+          After claiming, the list reorders. Re-read rather than reusing row
+          positions.
+    ordering:
+      note: >
+        Claimable rows float to the TOP, incomplete ones sit in the middle, and
+        クリア済 sink to the BOTTOM. So the first row is the one to act on.
+    verify:
+      expect: >
+        on a claim, the row disappears, ルーン progress rises by the reward
+        amount (+8 per daily) and the chest counter at the top right advances
+      measured: >
+        wood-gathering daily: 34/100 -> 42/100, chests 2/7 -> 3/7.
+        silver-chest daily: 42/100 -> 50/100, chests 3/7 -> 4/7.
+
+  - name: open_silver_chests
+    verified: true
+    description: Open silver hero chests — the 白銀の宝箱 daily.
+    danger: >
+      The gold chest sits in the SAME row as the silver one (開放 at x~0.691
+      against silver at x~0.315) and must not be opened. On the result screen
+      全開放 at x~0.834 would spend EVERY key at once (1,169 of them) and
+      もう10回開放 at x~0.610 opens ten. The one to press is もう1回開放 at
+      x~0.390.
+    procedure:
+      - action: navigate
+        note: GO from the daily challenge, which lands on 英雄募集
+      - action: tap
+        target: {x: 0.315, y: 0.802}
+        note: >
+          The SILVER 開放. One free pull a day; after it is spent the silver side
+          re-draws as 1回開放 / 10回開放 and the label becomes a countdown to the
+          next free one.
+      - action: repeat
+        target: {x: 0.390, y: 0.856}
+        note: >
+          もう1回開放 on the result screen, once per extra chest. Wait about 3
+          seconds between taps — the opening animation hides the buttons — and
+          count with the KEY COUNTER at the top rather than trusting the taps:
+          it drops by one per keyed open.
+      - action: tap
+        target: {x: 0.170, y: 0.856}
+        note: 確定, to close the results
+    verify:
+      expect: the daily row shows 5/5 with a green 受取
+      measured: >
+        keys 1,169 -> 1,165 for five chests: the first used the day's free pull
+        and the next four cost one key each.
 
   - name: check_marches
     verified: true

@@ -36,9 +36,17 @@ build:
 
 # The binary links libnautilus_core.dylib by ABSOLUTE path into this repo's
 # crates/target/release, so the repo has to stay put for the installed copy to run.
+#
+# Copy then RE-SIGN. Overwriting a binary that has already been executed leaves
+# the kernel holding a stale ad-hoc signature for that path, and every later
+# launch dies with SIGKILL "Taskgated Invalid Signature" — no stdout, no stderr,
+# nothing on the terminal. An MCP client sees only a server that never answers.
+# The copy is byte-identical to a working binary and `codesign -v` calls it
+# valid, so nothing about the file itself gives the game away.
 install: build
 	@mkdir -p "$(BINDIR)"
 	@cp swift/.build/release/nautilus-mcp "$(BINDIR)/nautilus-mcp"
+	@codesign --force --sign - "$(BINDIR)/nautilus-mcp" 2>/dev/null || true
 	@echo "✅ Installed $(BINDIR)/nautilus-mcp"
 	@echo "   Links the dylib from $(CURDIR)/crates/target/release — keep this repo in place."
 	@echo "   Register it with an MCP client, e.g.:"

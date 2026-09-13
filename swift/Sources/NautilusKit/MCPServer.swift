@@ -8,8 +8,27 @@ import Foundation
 /// work around.
 @MainActor
 public final class MCPServer {
-    /// The MCP revision this server implements.
-    public static let protocolVersion = "2024-11-05"
+    /// The MCP revision this server prefers.
+    public static let protocolVersion = "2025-06-18"
+
+    /// Revisions this server will speak, newest first.
+    ///
+    /// It implements `initialize`, `tools/list` and `tools/call`, which are
+    /// compatible across all of these; nothing here depends on a feature that
+    /// arrived in a particular revision. So the honest answer to a client
+    /// asking for one of them is yes.
+    ///
+    /// Answering with a fixed version regardless of what was asked is legal but
+    /// unfriendly, and a client is entitled to give up on it. Codex requests
+    /// 2025-06-18.
+    public static let supportedVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
+
+    /// Echo back the client's revision when we speak it, otherwise offer ours
+    /// and let the client decide.
+    static func negotiate(_ requested: String?) -> String {
+        guard let requested, supportedVersions.contains(requested) else { return protocolVersion }
+        return requested
+    }
 
     private let serverName: String
     private let serverVersion: String
@@ -84,7 +103,8 @@ public final class MCPServer {
         switch method {
         case "initialize":
             return .object([
-                "protocolVersion": .string(Self.protocolVersion),
+                "protocolVersion": .string(
+                    Self.negotiate(params["protocolVersion"]?.stringValue)),
                 "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
                 "serverInfo": .object([
                     "name": .string(serverName), "version": .string(serverVersion),

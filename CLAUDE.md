@@ -92,6 +92,16 @@ device attached there are no `android_` tools. Advertising a tool that always
 fails is worse than omitting it — a model reads the list as what the machine can
 do and will keep choosing it.
 
+### Protocol version is negotiated, not asserted
+
+`initialize` echoes back the revision the client asked for when it is one we
+speak (2025-06-18, 2025-03-26, 2024-11-05), and offers ours otherwise. The
+server implements `initialize`, `tools/list` and `tools/call`, which are
+compatible across all three, so agreeing is honest rather than optimistic.
+
+Answering with a fixed version regardless of the request is legal but
+unfriendly, and a client may simply give up — codex asks for 2025-06-18.
+
 ### Tool failure vs. protocol error
 
 MCP draws a line, and so do we:
@@ -405,6 +415,21 @@ nautilus-mcp/
 ```
 
 ## Troubleshooting
+
+**An MCP client does not see the server at all**: check the installed binary
+actually launches — `~/bin/nautilus-mcp --help; echo $?`. An exit of **137** is
+SIGKILL, and the crash report will say `Taskgated Invalid Signature`.
+Overwriting a binary that has already been run leaves the kernel holding a stale
+ad-hoc signature for that path; every later launch is killed before it prints
+anything, so the client sees a server that never answers. `make install`
+re-signs for this reason; to fix a copy made some other way:
+
+```bash
+codesign --force --sign - ~/bin/nautilus-mcp
+```
+
+Nothing about the file gives this away — it is byte-identical to a working
+binary and `codesign -v` calls it valid.
 
 **"library 'nautilus_core' not found"**: `cd crates && cargo build --release`
 

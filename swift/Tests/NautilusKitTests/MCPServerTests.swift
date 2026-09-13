@@ -36,6 +36,39 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(r?["id"]?.intValue, 1)
     }
 
+    /// A client that asks for a revision we speak must be answered in that
+    /// revision. Replying with a fixed version regardless is legal but
+    /// unfriendly, and a client is entitled to give up on it — codex asks for
+    /// 2025-06-18.
+    func testInitializeEchoesARevisionWeSpeak() async {
+        for requested in MCPServer.supportedVersions {
+            let r = await send(
+                makeServer(),
+                #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"\#(requested)"}}"#
+            )
+            XCTAssertEqual(
+                r?["result"]?["protocolVersion"]?.stringValue, requested,
+                "asked for \(requested)")
+        }
+    }
+
+    /// An unknown revision gets ours back, so the client can decide.
+    func testInitializeOffersOursForAnUnknownRevision() async {
+        let r = await send(
+            makeServer(),
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#
+        )
+        XCTAssertEqual(
+            r?["result"]?["protocolVersion"]?.stringValue, MCPServer.protocolVersion)
+    }
+
+    func testNegotiationIsPureAndTotal() {
+        XCTAssertEqual(MCPServer.negotiate(nil), MCPServer.protocolVersion)
+        XCTAssertEqual(MCPServer.negotiate(""), MCPServer.protocolVersion)
+        XCTAssertEqual(MCPServer.negotiate("2024-11-05"), "2024-11-05")
+        XCTAssertTrue(MCPServer.supportedVersions.contains(MCPServer.protocolVersion))
+    }
+
     /// A notification has no id and must draw no response at all — answering one
     /// is a protocol violation that some clients treat as fatal.
     func testNotificationsAreNotAnswered() async {

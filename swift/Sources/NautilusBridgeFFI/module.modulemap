@@ -1,0 +1,5 @@
+module nautilus_coreFFI [system] {
+    header "nautilus_coreFFI.h"
+    link "nautilus_core"
+    export *
+}

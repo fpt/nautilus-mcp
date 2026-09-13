@@ -1,0 +1,36 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# Models
+models/
+*.gguf
+*.bin
+
+# Config
+.env
+configs/local.yaml
+configs/production.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Generated
+vendor/uniffi-swift/

@@ -1,0 +1,52 @@
+// nautilus-core: the Rust half of nautilus-mcp.
+//
+// Swift owns the MCP server and the main loop; this library contributes the
+// Android device controls. The surface is deliberately generic — a tool list
+// and a call-by-name — so adding an Android primitive needs no .udl change and
+// no regenerated bindings.
+
+namespace nautilus_core {};
+
+[Error]
+enum NautilusError {
+    "ConfigError",
+    "InternalError",
+};
+
+// One tool, in the shape an MCP `tools/list` entry needs.
+dictionary ToolSpec {
+    string name;
+    string description;
+    // JSON Schema for the arguments, as a JSON string. Swift hands it to the
+    // MCP client verbatim rather than re-modelling it.
+    string input_schema;
+};
+
+dictionary ToolImage {
+    string base64;
+    string media_type;
+};
+
+// The result of a tool call: text, plus any images it produced.
+dictionary ToolOutput {
+    string text;
+    sequence<ToolImage> images;
+};
+
+// A bound Android device. Construction resolves the device and fails with an
+// explanation (none attached, unauthorized, ambiguous) rather than binding to
+// nothing.
+interface AndroidController {
+    [Throws=NautilusError]
+    constructor(string? serial);
+
+    // The serial this controller is pinned to.
+    string serial();
+
+    // Every Android tool, for the MCP server's tools/list.
+    sequence<ToolSpec> tools();
+
+    // Invoke one by name. `args_json` is the MCP client's arguments object.
+    [Throws=NautilusError]
+    ToolOutput call(string name, string args_json);
+};

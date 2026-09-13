@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Only the Rust half runs here. The Swift package requires macOS 26, which the
+# hosted runners do not provide — building it on an older image fails on the
+# platform requirement rather than on anything real. The Rust crate has no
+# native dependencies (nautilus-core shells out to `adb`; there is no llama.cpp
+# any more), so it builds anywhere.
+jobs:
+  rust-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('crates/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format
+        working-directory: crates
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: crates
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The device-dependent paths are exercised by
+      # `cargo run --example android_probe` against real hardware; these tests
+      # parse captured device output and need nothing attached.
+      - name: Test
+        working-directory: crates
+        run: cargo test

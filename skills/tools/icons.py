@@ -281,6 +281,132 @@ def cmd_learn(server: Server, args) -> int:
     return 1
 
 
+def _iou(a: dict, b: dict) -> float:
+    ix1, iy1 = max(a["x1"], b["x1"]), max(a["y1"], b["y1"])
+    ix2, iy2 = min(a["x2"], b["x2"]), min(a["y2"], b["y2"])
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area_a = (a["x2"] - a["x1"]) * (a["y2"] - a["y1"])
+    area_b = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"])
+    return inter / (area_a + area_b - inter)
+
+
+def cmd_benchmark(server: Server, args) -> int:
+    """Leave-one-out localization test over the stored samples.
+
+    The question a matcher change has to answer is "would it have FOUND this in
+    a scene", and a saved crop cannot answer it — a crop contains only the
+    answer. Each sample therefore keeps a patch of the surrounding scene plus
+    the known position inside it, which makes every learned sample a labelled
+    localization test.
+
+    For each positive: build a prototype from the OTHER positives, hand the
+    matcher that sample's context patch, and score the top hit by IoU against
+    where the element is known to be. Hard negatives are run too, to see what
+    the matcher says when the element is absent.
+    """
+    import shutil
+    import tempfile
+
+    resources = Path(args.resources)
+    names = json.loads(server.call("visual_list"))
+    if args.set:
+        names = [r for r in names if r["name"].startswith(args.set + "/")]
+    server.close()
+
+    folds = []  # (prototype_name, fold_name, context_png, ground_truth, kind)
+    tmp = Path(tempfile.mkdtemp(prefix="nautilus-bench-"))
+    try:
+        for row in names:
+            name = row["name"]
+            source = resources / name / "prototype.json"
+            if not source.exists():
+                continue
+            proto = json.loads(source.read_text())
+            positives = proto.get("positives", [])
+            labelled = [s for s in positives if s.get("contextFile") and s.get("targetInContext")]
+            if len(labelled) < 2:
+                print(f"{name}: {len(labelled)} labelled sample(s) — need 2+ for leave-one-out."
+                      "\n   Re-learn it so a context patch is stored:"
+                      f"\n   uv run icons.py learn {name} --region x1,y1,x2,y2")
+                continue
+
+            for index, held_out in enumerate(labelled):
+                others = [s for s in positives if s is not held_out]
+                if not others:
+                    continue
+                fold = f"{name}__f{index}"
+                # Express the fold in the CONTEXT PATCH's coordinates. A
+                # prototype's learned size is a fraction of the whole screen,
+                # but in a 3x patch the element fills about a third — leave it
+                # alone and the size sweep hunts for something five times too
+                # small and finds nothing.
+                gt = held_out["targetInContext"]
+                w = gt["x2"] - gt["x1"]
+                h = gt["y2"] - gt["y1"]
+                rescaled = []
+                for sample in others:
+                    copy = dict(sample)
+                    copy["width"], copy["height"] = w, h
+                    rescaled.append(copy)
+                body = {
+                    "name": fold,
+                    "semantic": proto.get("semantic"),
+                    "kind": proto.get("kind"),
+                    "positives": rescaled,
+                    "negatives": proto.get("negatives", []),
+                }
+                out = tmp / fold
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "prototype.json").write_text(json.dumps(body))
+                folds.append((name, fold, resources / name / held_out["contextFile"], gt))
+
+        if not folds:
+            print("\nNothing to benchmark yet.")
+            return 0
+
+        bench = Server(Path(args.binary), tmp, "off")
+        results: dict[str, list] = {}
+        for name, fold, context_png, gt in folds:
+            if not context_png.exists():
+                continue
+            loaded = bench.call_json("image_load", {"path": str(context_png)})
+            found = bench.call_json("visual_find", {
+                "prototype": fold, "frame_id": loaded["frame_id"],
+                "region": {"x1": 0, "y1": 0, "x2": 1, "y2": 1},
+                "min_score": 0.0, "max_results": 5})
+            row = {"iou": 0.0, "score": 0.0, "margin": 0.0, "rank": None}
+            for rank, match in enumerate(found.get("matches", []), start=1):
+                overlap = _iou(match["bbox"], gt)
+                if rank == 1:
+                    row.update(iou=overlap, score=match["score"],
+                               margin=found.get("margin", 0.0))
+                if overlap >= 0.5 and row["rank"] is None:
+                    row["rank"] = rank
+            results.setdefault(name, []).append(row)
+        bench.close()
+
+        print(f"\nleave-one-out localization, {len(folds)} fold(s)")
+        print(f"{'prototype':30} {'top-1':>6} {'mean IoU':>9} {'mean score':>11} {'found@k':>8}")
+        overall_hits = overall = 0
+        for name, rows in sorted(results.items()):
+            hits = sum(1 for r in rows if r["iou"] >= 0.5)
+            anywhere = sum(1 for r in rows if r["rank"] is not None)
+            mean_iou = sum(r["iou"] for r in rows) / len(rows)
+            mean_score = sum(r["score"] for r in rows) / len(rows)
+            overall_hits += hits
+            overall += len(rows)
+            print(f"{name:30} {hits}/{len(rows):<4} {mean_iou:>9.3f} {mean_score:>11.3f} "
+                  f"{anywhere}/{len(rows):>6}")
+        print(f"\ntop-1 overall: {overall_hits}/{overall}")
+        print("top-1 counts a first-place hit overlapping the truth by IoU >= 0.5;")
+        print("found@k counts it appearing anywhere in the returned candidates.")
+        return 0 if overall_hits == overall else 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -301,6 +427,11 @@ def main() -> int:
     p = sub.add_parser("check", help="do the stored prototypes still match?")
     p.add_argument("set", nargs="?", help="only this set, e.g. farlight_cod")
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser(
+        "benchmark", help="leave-one-out localization test over the stored samples")
+    p.add_argument("set", nargs="?", help="only this set, e.g. farlight_cod")
+    p.set_defaults(func=cmd_benchmark)
 
     p = sub.add_parser("learn", help="teach an appearance")
     p.add_argument("name", help="prototype id, e.g. farlight_cod/march_button")

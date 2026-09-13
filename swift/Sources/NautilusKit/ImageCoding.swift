@@ -23,6 +23,13 @@ enum ImageCoding {
         return cgImage(from: raw)
     }
 
+    /// Read a PNG from disk. Same codec path as everything else — ImageIO is
+    /// not usable here, see the note above.
+    static func load(_ url: URL) -> CGImage? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        return decode(base64: data.base64EncodedString())
+    }
+
     /// Wrap RGBA8 bytes as a `CGImage`.
     static func cgImage(from raw: RawImage) -> CGImage? {
         let width = Int(raw.width)

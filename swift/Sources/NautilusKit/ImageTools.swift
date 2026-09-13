@@ -272,6 +272,48 @@ public final class ImageRegionsTool: MCPTool {
     }
 }
 
+// MARK: - image_load
+
+/// Bring an image on disk into the frame store.
+///
+/// Exists so a matcher can be run against saved material rather than only
+/// against a live screen. Without it, "did this change help?" can only be
+/// answered by eye on a game whose background differs every run — which is how
+/// a shortlist change shipped with no evidence either way.
+@MainActor
+public final class ImageLoadTool: MCPTool {
+    private let store: FrameStore
+    public init(store: FrameStore) { self.store = store }
+
+    public var name: String { "image_load" }
+    public var description: String {
+        "Load a PNG from disk as a frame, so the image tools can work on saved material instead "
+            + "of a live screen. Intended for offline analysis and benchmarking. The loaded image "
+            + "becomes the most recent frame, so a following call with no frame_id will use it."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(
+            properties: ["path": .property("string", "Path to a PNG file.")],
+            required: ["path"])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let path = try arguments.string("path")
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard let image = ImageCoding.load(url) else {
+            throw ToolFailure("could not read a PNG from \(path)")
+        }
+        let frame = store.register(image: image, source: "file:\(url.lastPathComponent)")
+        return MCPToolResult(
+            text: try JSONValue.object([
+                "frame_id": .string(frame.id),
+                "width": .number(Double(frame.pixelWidth)),
+                "height": .number(Double(frame.pixelHeight)),
+                "source": .string(frame.source),
+            ]).serialized())
+    }
+}
+
 // MARK: - image_diff
 
 /// What changed between two frames — the verification primitive.

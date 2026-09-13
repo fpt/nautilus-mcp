@@ -174,6 +174,18 @@ public struct PrototypeSample: Codable, Sendable {
     /// matching key.
     public var note: String?
 
+    /// A patch of the surrounding scene, saved beside the prototype.
+    ///
+    /// The crop alone cannot answer the question that matters — *would the
+    /// matcher have found this in a scene?* — because it contains only the
+    /// answer. A patch of context plus the known position inside it turns every
+    /// learned sample into a labelled localization test, which is what makes a
+    /// matcher change measurable instead of a matter of opinion.
+    public var contextFile: String?
+    /// Where the element sits inside that patch: the ground truth an IoU is
+    /// measured against.
+    public var targetInContext: NormRectCodable?
+
     var signature: ShapeSignature? {
         guard let data = Data(base64Encoded: shape),
             data.count == ShapeSignature.size * ShapeSignature.size

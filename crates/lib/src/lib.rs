@@ -40,6 +40,19 @@ pub enum NautilusError {
     InternalError(String),
 }
 
+pub use image::RawImage;
+
+/// Decode a base64 PNG into RGBA8 pixels. See [`image`] for why this is here
+/// rather than in Swift.
+pub fn decode_png_base64(base64_png: String) -> Result<RawImage, NautilusError> {
+    image::decode_png_base64(&base64_png)
+}
+
+/// Encode RGBA8 pixels as a base64 PNG for an MCP image block.
+pub fn encode_png_base64(image: RawImage) -> Result<String, NautilusError> {
+    image::encode_png_base64(&image)
+}
+
 /// One tool, shaped for an MCP `tools/list` entry.
 pub struct ToolSpec {
     pub name: String,

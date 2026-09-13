@@ -281,6 +281,16 @@ RustBuffer uniffi_nautilus_core_fn_method_androidcontroller_serial(void*_Nonnull
 RustBuffer uniffi_nautilus_core_fn_method_androidcontroller_tools(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_DECODE_PNG_BASE64
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_DECODE_PNG_BASE64
+RustBuffer uniffi_nautilus_core_fn_func_decode_png_base64(RustBuffer base64_png, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_ENCODE_PNG_BASE64
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_ENCODE_PNG_BASE64
+RustBuffer uniffi_nautilus_core_fn_func_encode_png_base64(RustBuffer image, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUSTBUFFER_ALLOC
 RustBuffer ffi_nautilus_core_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -559,6 +569,18 @@ void ffi_nautilus_core_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUST_FUTURE_COMPLETE_VOID
 void ffi_nautilus_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_DECODE_PNG_BASE64
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_DECODE_PNG_BASE64
+uint16_t uniffi_nautilus_core_checksum_func_decode_png_base64(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_ENCODE_PNG_BASE64
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_ENCODE_PNG_BASE64
+uint16_t uniffi_nautilus_core_checksum_func_encode_png_base64(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_METHOD_ANDROIDCONTROLLER_CALL

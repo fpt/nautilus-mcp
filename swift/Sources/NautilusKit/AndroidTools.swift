@@ -1,26 +1,6 @@
-import AppKit
 import CoreGraphics
 import Foundation
 import NautilusBridge
-
-/// Decode a base64 PNG into pixels we can run Vision over.
-///
-/// Uses AppKit's decoder rather than ImageIO. `CGImageSourceCreateImageAtIndex`
-/// reproducibly killed this process with SIGBUS (`EXC_ARM_DA_ALIGN`) inside
-/// `PNGReadPlugin::InitializePluginData` when handed a device screenshot — with
-/// the bytes copied into a CoreFoundation-owned `CFData`, so it was not a
-/// lifetime problem on our side. `NSBitmapImageRep` decodes the identical bytes
-/// without complaint, and is the mirror of `cgImageToBase64`, which already
-/// encodes through it.
-///
-/// The `CGImage` an `NSBitmapImageRep` vends is owned by the rep, so the rep is
-/// kept alive across the call and the image is copied out of it.
-func decodeImage(base64: String) -> CGImage? {
-    guard let data = Data(base64Encoded: base64), !data.isEmpty,
-        let rep = NSBitmapImageRep(data: data)
-    else { return nil }
-    return withExtendedLifetime(rep) { rep.cgImage?.copy() }
-}
 
 /// One Android primitive, forwarded to the Rust core.
 ///
@@ -61,7 +41,7 @@ public final class AndroidTool: MCPTool {
         let images = output.images.map { MCPImage(base64: $0.base64, mimeType: $0.mediaType) }
 
         if let store, let first = output.images.first,
-            let decoded = decodeImage(base64: first.base64)
+            let decoded = ImageCoding.decode(base64: first.base64)
         {
             let frame = store.register(image: decoded, source: "android")
             text += " frame_id=\(frame.id) — crop, OCR or diff it without re-capturing."

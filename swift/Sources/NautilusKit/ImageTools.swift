@@ -144,7 +144,7 @@ public final class ImageCropTool: MCPTool {
             throw ToolFailure("that region does not overlap frame \(frame.id)")
         }
         let cropped = store.registerCrop(of: frame, root: frame.toRoot(target), image: pixels)
-        guard let base64 = WindowManager.cgImageToBase64(pixels) else {
+        guard let base64 = ImageCoding.encodeBase64(pixels) else {
             throw ToolFailure("could not encode the crop as PNG")
         }
         return MCPToolResult(

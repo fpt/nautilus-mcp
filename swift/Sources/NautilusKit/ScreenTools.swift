@@ -126,7 +126,7 @@ public final class CaptureWindowTool: MCPTool {
 
     public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
         let (image, info) = try await WindowTarget(arguments).resolve(manager)
-        guard let base64 = WindowManager.cgImageToBase64(image) else {
+        guard let base64 = ImageCoding.encodeBase64(image) else {
             throw ToolFailure("could not encode the capture as PNG")
         }
         // Registered like an Android observe, so image_crop / image_ocr /

@@ -5,7 +5,27 @@
 // and a call-by-name — so adding an Android primitive needs no .udl change and
 // no regenerated bindings.
 
-namespace nautilus_core {};
+namespace nautilus_core {
+    // PNG coding for the Swift side. It has ImageIO and cannot use it: on the
+    // development machine ImageIO's codecs fault (SIGBUS, a poisoned 0xbad4007
+    // function pointer) in any ordinary compiled binary, encode and decode
+    // alike, while working inside Apple-signed hosts like xctest. Building a
+    // CGImage from raw bytes and running Vision over it are unaffected, so only
+    // the file codec has to come from here.
+    [Throws=NautilusError]
+    RawImage decode_png_base64(string base64_png);
+
+    [Throws=NautilusError]
+    string encode_png_base64(RawImage image);
+};
+
+// Uncompressed pixels, row-major RGBA8 — what CGImage can be built from
+// directly, so Swift needs no decoder of its own.
+dictionary RawImage {
+    u32 width;
+    u32 height;
+    sequence<u8> rgba;
+};
 
 [Error]
 enum NautilusError {

@@ -47,7 +47,7 @@ Rust contributes the Android controls and nothing else.
 | `android/device.rs` | adb transport: rotation-aware geometry, normalized→pixel, timeouts. |
 | `android/tools.rs` | The `android_*` primitives as `ToolHandler`s. |
 | `tool.rs` | `ToolHandler` / `ToolResult`. |
-| `image.rs` | `ImageContent` — all that survives of the old `llm.rs`. |
+| `image.rs` | `ImageContent`, plus the PNG codec Swift borrows — see **ImageIO is unusable** below. |
 | `nautilus.udl` | UniFFI interface definition. |
 
 The FFI surface is **generic on purpose**: `tools()` + `call(name, args_json)`.
@@ -58,7 +58,7 @@ Adding an Android primitive needs no `.udl` change and no regenerated bindings.
 | Target | Purpose |
 |---|---|
 | `NautilusMcp` | Executable. Argument parsing and the stdio loop — nothing else. |
-| `NautilusKit` | MCP protocol (`MCPServer`), the tool protocol, and every tool implementation. Where the work is, and what the tests cover. |
+| `NautilusKit` | MCP protocol (`MCPServer`), the tool protocol, the `FrameStore`, and every tool implementation. Where the work is, and what the tests cover. |
 | `ScreenCapture` | WindowManager / OCR / ObjectDetector, plus `ScreenPerception`. macOS only. |
 | `TTS` | AVSpeechSynthesizer wrapper, behind the `say` tool. |
 | `FoundationModelsKit` | Apple's on-device model, in-process, behind `ask_local_model`. |
@@ -109,6 +109,93 @@ wrong by accident.
 MCP permits pipelining. Every tool here ultimately touches a single shared
 resource — one screen, one device, one speaker — so serializing is the honest
 behaviour, not a limitation to work around.
+
+## Perception: frames, regions, coordinates
+
+`android_observe` and `macos_capture_window` both mint a **`frame_id`** and keep
+the pixels in a [`FrameStore`] — a ring buffer of the last 8. The image tools
+then address a frame by id (omit it for the most recent), so a loop like
+
+```
+observe → regions → crop → ocr → tap → observe → diff
+```
+
+pushes the picture across the protocol only when a caller actually needs to look
+at it. A game screenshot is over a megabyte of base64; sending it four times for
+one decision is the thing the cache exists to stop.
+
+| tool | |
+|---|---|
+| `image_ocr` | text + boxes; narrow with `region`/`region_id` for speed and accuracy |
+| `image_crop` | cut a region out as a **new frame**, and show it |
+| `image_regions` | candidate areas: `text_like`, `rectangle`, `salient` |
+| `image_diff` | what changed between two frames |
+| `android_tap_region` | tap a region's centre — sugar over `android_tap` |
+
+They are source-agnostic: the same four work on an Android screenshot and a
+macOS window.
+
+### Every box is in root-frame coordinates
+
+This is the invariant the whole design rests on. A crop is itself a `Frame` that
+remembers, in `originRect`, where it sits in the root frame — so a hit found
+inside a crop of a crop still reports **where it is on the screen**, never where
+it is in the crop.
+
+Get this wrong and nothing downstream can interpret a box: OCR a crop of the
+bottom-right corner, return `[0.3, 0.2, 0.7, 0.8]`, and no caller can say whether
+that is crop space or screen space. Because Android input is normalized against
+the same frame, `ocr → bbox → tap` composes with **no conversion step at all**.
+
+Verified against the live game: a 147x48 crop at root `x 0.890-1.0,
+y 0.052-0.116`, OCRed, returned boxes at `x 0.910-0.988, y 0.076-0.094` — root
+coordinates. Crop-local ones would have read about `0.17, 0.38`.
+
+### `image_regions` says where, never what
+
+It reports `text_like` / `rectangle` / `salient` and stops there. Vision
+proposes; OCR and the caller's own eyes decide. A server that answered
+"barracks" would be guessing about an application it knows nothing about, and
+would stop the caller looking for itself. The division is:
+
+```
+Vision Framework = proposal generator
+OCR              = symbolic reader
+the caller       = semantic classifier
+```
+
+Composite, app-aware tools (`find_and_click_text`, `train_archer`) belong
+**above** this server, not in it. That boundary is what lets the same server
+drive a different application unchanged.
+
+### ImageIO is unusable — PNG coding goes through Rust
+
+`ImageCoding` (Swift) delegates PNG encode and decode to the Rust core's `png`
+crate. Swift has ImageIO and **cannot use it here**: its codecs fault with
+
+```
+SIGBUS  EXC_ARM_DA_ALIGN at 0x0bad4007   <- the top frame IS that address
+  ImageIO  PNGWritePlugin::writePrologue / PNGReadPlugin::InitializePluginData
+```
+
+in any ordinary compiled binary — encode *and* decode, PNG *and* TIFF — while
+working inside Apple-signed hosts. Established by elimination: it survives a
+reboot, is not the data (a 64x64 image we generate ourselves faults on encode),
+is not the Rust dylib (a bare `swiftc` binary faults identically), and is not
+fixed by re-signing with a hardened runtime or `disable-library-validation`.
+
+Two consequences worth remembering:
+
+- **No test can catch a regression here**, because `xctest` is Apple-signed and
+  ImageIO works inside it. The failure mode is a process crash, not an
+  exception, so it takes the MCP session with it. Verify image paths by running
+  the built binary, never by trusting a green suite.
+- Everything else is fine: `CGImage` built from raw bytes is pure CoreGraphics,
+  and Vision reads it happily. Only the file codec is broken, so only the file
+  codec moved.
+
+If ImageIO is ever healthy on a target machine, `ImageCoding` is the single
+place to revisit — nothing else touches image files.
 
 ## Android controls
 
@@ -172,8 +259,8 @@ must fail the tool call, not hang the server.
 - **ASCII only** for `android_text`; Japanese needs an IME such as ADBKeyboard.
   Non-ASCII is rejected with that explanation rather than silently typing
   nothing.
-- **No crop / OCR / image-diff** on the Android side — those need an image
-  decoder in the crate. (macOS has all three.)
+- **No hover-driven inspection**, per the first bullet; crop, OCR, region
+  proposal and diff are all present now, on both sources.
 
 ## Build & Run
 

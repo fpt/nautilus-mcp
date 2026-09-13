@@ -212,15 +212,15 @@ final class ImageDecodeTests: XCTestCase {
     }
 
     func testDecodesAPNGArrivingAsBase64() throws {
-        let decoded = decodeImage(base64: try pngBase64(1336, 752))
+        let decoded = ImageCoding.decode(base64: try pngBase64(1336, 752))
         XCTAssertEqual(decoded?.width, 1336)
         XCTAssertEqual(decoded?.height, 752)
     }
 
     func testRejectsRubbishInsteadOfFaulting() {
-        XCTAssertNil(decodeImage(base64: ""))
-        XCTAssertNil(decodeImage(base64: "not base64 at all !!!"))
+        XCTAssertNil(ImageCoding.decode(base64: ""))
+        XCTAssertNil(ImageCoding.decode(base64: "not base64 at all !!!"))
         // Valid base64, but not an image.
-        XCTAssertNil(decodeImage(base64: Data("hello".utf8).base64EncodedString()))
+        XCTAssertNil(ImageCoding.decode(base64: Data("hello".utf8).base64EncodedString()))
     }
 }

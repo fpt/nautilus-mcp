@@ -399,6 +399,38 @@ fileprivate class UniffiHandleMap<T> {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
+    typealias FfiType = UInt32
+    typealias SwiftType = UInt32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -583,6 +615,80 @@ public func FfiConverterTypeAndroidController_lift(_ pointer: UnsafeMutableRawPo
 #endif
 public func FfiConverterTypeAndroidController_lower(_ value: AndroidController) -> UnsafeMutableRawPointer {
     return FfiConverterTypeAndroidController.lower(value)
+}
+
+
+public struct RawImage {
+    public var width: UInt32
+    public var height: UInt32
+    public var rgba: [UInt8]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(width: UInt32, height: UInt32, rgba: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.rgba = rgba
+    }
+}
+
+
+
+extension RawImage: Equatable, Hashable {
+    public static func ==(lhs: RawImage, rhs: RawImage) -> Bool {
+        if lhs.width != rhs.width {
+            return false
+        }
+        if lhs.height != rhs.height {
+            return false
+        }
+        if lhs.rgba != rhs.rgba {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(width)
+        hasher.combine(height)
+        hasher.combine(rgba)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRawImage: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RawImage {
+        return
+            try RawImage(
+                width: FfiConverterUInt32.read(from: &buf), 
+                height: FfiConverterUInt32.read(from: &buf), 
+                rgba: FfiConverterSequenceUInt8.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RawImage, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.width, into: &buf)
+        FfiConverterUInt32.write(value.height, into: &buf)
+        FfiConverterSequenceUInt8.write(value.rgba, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRawImage_lift(_ buf: RustBuffer) throws -> RawImage {
+    return try FfiConverterTypeRawImage.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRawImage_lower(_ value: RawImage) -> RustBuffer {
+    return FfiConverterTypeRawImage.lower(value)
 }
 
 
@@ -881,6 +987,31 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt8: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt8]
+
+    public static func write(_ value: [UInt8], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt8.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt8] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt8]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt8.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeToolImage: FfiConverterRustBuffer {
     typealias SwiftType = [ToolImage]
 
@@ -927,6 +1058,20 @@ fileprivate struct FfiConverterSequenceTypeToolSpec: FfiConverterRustBuffer {
         return seq
     }
 }
+public func decodePngBase64(base64Png: String)throws  -> RawImage {
+    return try  FfiConverterTypeRawImage.lift(try rustCallWithError(FfiConverterTypeNautilusError.lift) {
+    uniffi_nautilus_core_fn_func_decode_png_base64(
+        FfiConverterString.lower(base64Png),$0
+    )
+})
+}
+public func encodePngBase64(image: RawImage)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeNautilusError.lift) {
+    uniffi_nautilus_core_fn_func_encode_png_base64(
+        FfiConverterTypeRawImage.lower(image),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -942,6 +1087,12 @@ private var initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_nautilus_core_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_nautilus_core_checksum_func_decode_png_base64() != 58346) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nautilus_core_checksum_func_encode_png_base64() != 9914) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nautilus_core_checksum_method_androidcontroller_call() != 13175) {
         return InitializationResult.apiChecksumMismatch

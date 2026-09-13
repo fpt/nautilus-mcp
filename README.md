@@ -31,10 +31,25 @@ MCP client (Claude Code, …)
 | `android_tap` / `android_swipe` / `android_long_press` | touch input |
 | `android_key` / `android_text` | hardware keys and typed text |
 | `android_wait` / `android_launch_app` | pace a sequence, start an app |
+| `android_tap_region` | tap a region found by `image_regions` |
+| `image_ocr` | read text in a frame, with boxes |
+| `image_crop` | cut a region out as a new frame |
+| `image_regions` | propose areas worth inspecting |
+| `image_diff` | what changed between two frames |
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are
 absent entirely. A tool that is present is one that works.
+
+### Observe once, then look closely
+
+Captures are cached as frames. `android_observe` and `macos_capture_window`
+return a `frame_id`; `image_ocr`, `image_crop`, `image_regions` and `image_diff`
+work on that id, so a whole inspect-and-act loop sends the picture across the
+wire only when someone needs to see it.
+
+Every box they return is in **whole-frame** coordinates, even one found inside a
+crop of a crop — so `ocr → bbox → tap` needs no conversion.
 
 ### Coordinates are normalized
 

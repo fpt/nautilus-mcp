@@ -1,0 +1,353 @@
+# Skills for コール オブ ドラゴンズ (Call of Dragons), Japanese client.
+#
+# Discovered by exploration through nautilus-mcp on a Retroid Pocket 3+
+# (Android 11, 1336x752 landscape). Coordinates are normalized 0.0-1.0.
+
+app:
+  package: com.farlightgames.samo.gp.jp
+  activity: com.harry.engine.MainActivity
+  orientation: landscape
+
+# ---------------------------------------------------------------------------
+# Rules that apply to everything. Each was learned by getting it wrong.
+# ---------------------------------------------------------------------------
+house_rules:
+  - id: never_press_back
+    rule: >
+      Never send the BACK key. It does not close dialogs — it opens
+      "ゲームを退出しますか?" (quit the game?). If it appears, tap キャンセル
+      (the RIGHT button); 確定 on the left quits.
+    severity: critical
+
+  - id: buttons_are_short_taps
+    rule: >
+      UI buttons respond to a short tap. A long press on a button does not
+      activate it — on an open panel it just dismisses the panel. Long press is
+      only for map tiles, where it opens the tile action panel.
+
+  - id: first_tap_only_dismisses
+    rule: >
+      While a panel is open, a tap elsewhere only dismisses that panel; it does
+      not select what was under it. Selecting a new map target takes two taps,
+      or dismiss first and verify before aiming.
+
+  - id: panels_shift_between_runs
+    rule: >
+      Panel contents change with game state, and the buttons move with them.
+      部隊作成 sat at y=0.261 when the panel also offered 一括作成, and at
+      y=0.217 when it did not (a march slot was in use). Locate panel buttons by
+      OCR every time.
+    evidence: "observed twice in one session, 0.044 apart"
+
+  - id: level_badge_is_below_the_sprite
+    rule: >
+      A creature's level badge sits *below* its sprite. Tapping the badge misses.
+      Aim roughly 0.07 above the badge, into the upper body of the sprite.
+
+  - id: selecting_recentres_the_map
+    rule: >
+      Selecting a map target pans the camera to centre it, so every other
+      target moves. Re-observe after any selection before aiming at anything
+      else. Panning a target to centre before tapping makes it much easier to
+      hit.
+
+  - id: moving_targets_carry_their_dialog
+    rule: >
+      Patrolling creatures keep walking while selected, and their info panel is
+      anchored to them, so the panel's buttons drift too. A tap computed from an
+      observation ~2s old will miss. Either use a stationary target, or loop
+      tightly: observe, locate the button, tap, verify, repeat.
+    severity: high
+
+  - id: ignore_controller_overlays
+    rule: >
+      The "L1" and "R1" glyphs in the lower corners are drawn by the Retroid
+      Pocket's key-binding app, NOT by the game. They are device-specific, they
+      pollute OCR, and they will not exist on another device. Never key a skill
+      off them — describe the game's own icon underneath.
+
+  - id: verify_by_state_not_by_tap
+    rule: >
+      android_tap reports success whether it hit a button or bare ground. Every
+      skill below names a specific verification signal; check it rather than
+      assuming.
+
+# ---------------------------------------------------------------------------
+# Where am I? Read this before anything else.
+# ---------------------------------------------------------------------------
+state_detection:
+  method: image_ocr
+  region: {x1: 0.85, y1: 0.05, x2: 1.0, y2: 0.13}
+  states:
+    in_city:
+      signal: "text contains 自分の都市"
+    on_map:
+      signal: >
+        text is a district name (e.g. ステルデン地区) and the top bar shows
+        coordinates K:<server> X:<n> Y:<n>
+  note: >
+    The top-right label is the only reliable city/map discriminator. The
+    lower-left toggle icon looks identical in both states.
+
+# ---------------------------------------------------------------------------
+skills:
+
+  - name: toggle_city_and_map
+    verified: true
+    description: Enter the city from the map, or leave the city for the map.
+    preconditions: [no modal panel open]
+    procedure:
+      - action: tap
+        target: {x: 0.047, y: 0.925}
+        note: >
+          The crest-shaped icon in the lower-left corner. It is a toggle — the
+          same icon in both directions.
+      - action: wait
+        seconds: 2.5
+      - action: observe
+    verify:
+      method: state_detection
+      expect: the state flipped (自分の都市 <-> district name + coordinates)
+    evidence: "自分の都市 -> ステルデン地区, K:SoS2-4155 X:986 Y:845"
+
+  - name: open_main_menu
+    verified: true
+    description: >
+      Open the bottom menu bar (pets, adventure, campaign, alliance, items,
+      heroes). Tapping the same icon again closes it.
+    procedure:
+      - action: tap
+        target: {x: 0.959, y: 0.916}
+        note: >
+          The crest-shaped icon in the lower-right corner, mirroring the
+          city/map toggle. NOT the gauntlet icon at x~0.89, which is something
+          else and carries its own badge.
+      - action: wait
+        seconds: 2
+    verify:
+      method: image_ocr
+      region: {x1: 0.48, y1: 0.93, x2: 1.0, y2: 1.0}
+      expect: "アイテム and 英雄 are present"
+    entries:  # icon row sits at y~0.945, labels at y~0.97
+      - {label: ペット,   x: 0.531}
+      - {label: 冒険録,   x: 0.604}
+      - {label: 戦役,     x: 0.676}
+      - {label: 同盟,     x: 0.748}
+      - {label: アイテム, x: 0.819}
+      - {label: 英雄,     x: 0.892}
+    note: >
+      OCR of these labels is low-confidence (0.3-0.5) because of the stylized
+      font, but their positions are stable and correct. Match loosely.
+
+  - name: deploy_troops_to_vacant_tile
+    verified: true
+    description: March an army to an empty map tile and station it there.
+    preconditions:
+      - on_map
+      - at least one free march slot (see check_marches)
+    procedure:
+      - action: long_press
+        target: "a visibly empty patch of terrain"
+        duration_ms: 800
+      - action: observe
+        expect_panel: >
+          title is a terrain name (e.g. 砂漠) and the footer reads
+          空き地 X:<n> Y:<n>. 空き地 ("vacant land") is the confirmation that
+          the tile is free — do not proceed without it.
+      - action: tap
+        target: 派遣
+        locate_by: ocr
+        fallback: {x: 0.540, y: 0.640}
+        danger: >
+          移転 sits on the SAME ROW at x~0.383 and RELOCATES YOUR CITY.
+          進軍攻撃 (march attack) is between them at x~0.462. Locate 派遣 by
+          text; never tap this row blind.
+      - action: tap
+        target: 部隊作成
+        locate_by: ocr
+        note: see house_rule panels_shift_between_runs
+      - action: tap
+        target: 進軍
+        locate_by: ocr
+        fallback: {x: 0.828, y: 0.864}
+        note: the gold button; it shows the march time beneath it
+    verify:
+      - the army appears at the target tile with your name label
+      - a march indicator appears in the top-right stack
+      - check_marches lists it at the target coordinates
+    evidence: "304,000 troops, heroes ゴレス/インディス, arrived at X:984 Y:845"
+
+  - name: deploy_gatherer_to_resource_node
+    verified: true
+    description: Send a gathering party to a resource node.
+    preconditions: [on_map, free march slot]
+    procedure:
+      - action: tap
+        target: "a resource node (rock pile, forest, etc; carries a level badge)"
+        note: a single short tap, NOT a long press
+      - action: observe
+        expect_panel: >
+          title Lv.<n> <resource> (e.g. Lv.7 鉄鉱), fields 貯蔵量 / 採集者 /
+          所属同盟, footer 資源点 X:<n> Y:<n>
+      - action: check
+        condition: "採集者 reads なし"
+        note: >
+          採集者 ("gatherer") is the vacancy test. Anything other than なし means
+          someone is already working the node — pick another.
+      - action: tap
+        target: 採集
+        locate_by: ocr
+        fallback: {x: 0.605, y: 0.762}
+      - action: tap
+        target: 部隊作成
+        locate_by: ocr
+      - action: check
+        condition: >
+          the march screen shows 輸送ユニット (transport unit, e.g. ドラフトホース)
+          with a non-zero count, and the second tab reads 採集 rather than ハント
+        note: >
+          The game swaps in a gathering composition automatically when the
+          target is a resource node — different heroes, transport troops instead
+          of combat troops. If you see combat units and ハント instead, you are
+          about to send the wrong army; back out.
+      - action: tap
+        target: 進軍
+        locate_by: ocr
+    verify:
+      method: check_marches
+      expect: "a march at the node's coordinates with status 採集中 <hh:mm:ss>"
+    evidence: >
+      20,952 ドラフトホース, heroes パン/ザザ, X:988 Y:845, 採集中 02:22:39
+
+  - name: check_marches
+    verified: true
+    description: >
+      Open the march management panel. This is the ground truth for every
+      deployment — it lists each army, its destination coordinates and its
+      current activity.
+    procedure:
+      - action: tap
+        target: {x: 0.974, y: 0.414}
+        note: >
+          The circular icon on the right edge. It is a toggle, not a close
+          button; tap it again to dismiss.
+    verify:
+      expect: >
+        header 部隊管理 with an <used>/<total> march counter, and one row per
+        army showing troop count, destination, status and heroes
+    reads:
+      - march slots used (e.g. 2/5)
+      - per-army: troop count, X/Y, status (採集中 = gathering), hero names
+      - an orange arrow button per row recalls that army
+
+  - name: attack_darkling
+    verified: partial
+    blocked_by: >
+      The 闇の哨兵 (dark sentry) patrols continuously, and its info panel is
+      anchored to it, so the 攻撃 button drifts several percent between an
+      observation and the tap that follows it. Every attempt landed on whatever
+      had moved under the cursor. The path below is confirmed up to and
+      including the 攻撃 button being present and correct; the march itself was
+      not launched.
+    description: >
+      Find a darkling and send an army to kill it. Use the search tool rather
+      than hunting for one on the map — darklings wander, so any coordinate you
+      compute is stale before you can use it.
+    procedure:
+      - action: tap
+        target: {x: 0.045, y: 0.787}
+        note: the magnifier icon on the left edge
+      - action: check
+        condition: "bottom tab ダークリング部隊 is selected"
+        alternatives: [金鉱, 伐採場, 鉄鉱, 魔力水場]
+        note: >
+          The same search panel finds resource nodes — the other tabs are the
+          reliable way to do deploy_gatherer_to_resource_node without scanning
+          the map by eye.
+      - action: tap
+        target: "one of the type tabs across the top"
+        options:
+          - {label: 闇の哨兵, x: 0.061, y: 0.394, note: "patrolling infantry — MOVES"}
+          - {label: 闇の城砦, x: 0.145, y: 0.394, note: "fortress — stationary, prefer this"}
+          - {label: 闇の衛兵, x: 0.230, y: 0.394, note: "guard"}
+          - {label: 野獣,     x: 0.315, y: 0.394, note: "wild beast — a PET, captured not killed; see capture_beast"}
+      - action: set
+        target: "the level slider"
+        note: >
+          − and + flank a level bar. Lv.1 is the safest test target; the reward
+          line above it states what a kill yields at the chosen level.
+      - action: tap
+        target: 捜索
+        locate_by: ocr
+        fallback: {x: 0.181, y: 0.732}
+      - action: observe
+        expect_panel: >
+          title 闇の哨兵 (or the chosen type), a Lv.<n> line, a 確率獲得 reward
+          row, a RED 攻撃 button, and footer ダークリング X:<n> Y:<n>.
+          The footer reading ダークリング is what distinguishes a real darkling
+          from a beast or an empty tile.
+      - action: tap
+        target: 攻撃
+        locate_by: ocr
+        note: >
+          Locate and tap in as tight a loop as possible; re-observe and retry if
+          the panel has moved. Prefer 闇の城砦, which does not move at all.
+      - action: tap
+        target: 部隊作成
+        locate_by: ocr
+      - action: tap
+        target: 進軍
+        locate_by: ocr
+    verify:
+      method: check_marches
+      expect: a march to the darkling's coordinates; a combat report follows
+
+  - name: capture_beast
+    verified: partial
+    blocked_by: not executed — consumes a limited capture item (所持 showed 4)
+    description: >
+      Capture a 野獣 (wild beast) as a pet. This is NOT the same as killing a
+      darkling: beasts offer 捕獲 (capture), which spends a capture item, and
+      the reward is a pet rather than EXP and loot. A beast can also simply be
+      attacked instead.
+    procedure:
+      - action: tap
+        target: "the beast sprite (aim ~0.07 above its level badge)"
+      - action: observe
+        expect_panel: >
+          title 野獣, a Lv.<n> <species> line (e.g. Lv.43 スノーベア), a row of
+          skills it may carry, 所持: <n> remaining capture items, a GOLD 捕獲
+          button, and footer 闇のクリーチャー X:<n> Y:<n>
+      - action: tap
+        target: 捕獲
+        locate_by: ocr
+    cost: one capture item per attempt
+    note: >
+      The footer says 闇のクリーチャー for beasts too, so the footer alone does
+      not distinguish a beast from a darkling — the 野獣 title and the 捕獲
+      button do.
+
+  # -------------------------------------------------------------------------
+  - name: collect_city_resource
+    verified: false
+    status: not attempted this session
+    description: >
+      In the city, tap a floating resource marker above a production building to
+      collect it. Four kinds exist, one per resource.
+    hints_observed:
+      - >
+        In city view, circular markers with a resource glyph (a gold coin among
+        them) float over buildings in the lower-left cluster, around
+        x 0.18-0.36, y 0.40-0.56.
+      - expected verification is the matching counter in the top bar increasing
+
+  - name: cure_troops_at_hospital
+    verified: false
+    status: not attempted this session
+    description: In the city, tap the '+' badge on the hospital to heal wounded troops.
+    hints_observed:
+      - >
+        Green '+' badges were visible over several buildings in city view around
+        x 0.62-0.81, y 0.23-0.32. Which of them is the hospital was not
+        confirmed — identify it by tapping one and reading the panel title
+        rather than by position.

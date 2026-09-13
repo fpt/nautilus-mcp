@@ -134,6 +134,44 @@ visual_prototypes:
   - id: farlight_cod/menu_items
     semantic: アイテム icon in the main menu bar
     measured: {score: 0.470, error: 0.008, took_ms: 111}
+  - id: farlight_cod/search_button
+    semantic: 捜索 — search for a node of the selected resource type
+    measured: {score: 0.448, error: 0.003, took_ms: 160}
+    note: >
+      Its edge sketch looks almost black — the button is a soft gradient with
+      few hard edges — yet it matches well because the feature print carries it
+      (feature 0.571 against shape 0.264). A dark sketch is not a failure; the
+      test is whether it finds itself.
+  - id: farlight_cod/gather_button
+    semantic: 採集 — send a gathering march to this node
+    verified: learned, not yet re-found on a fresh frame
+    note: the node panel anchors to the node, so this button moves; wide search prior
+  - id: farlight_cod/create_march_button
+    semantic: 部隊作成 — open the march composition screen
+    verified: learned, not yet re-found on a fresh frame
+  - id: farlight_cod/march_button
+    semantic: 進軍 — launch the march
+    verified: learned, not yet re-found on a fresh frame
+
+# ---------------------------------------------------------------------------
+# The search panel (magnifier, left edge at 0.045, 0.787) finds a node of a
+# given type and level and CENTRES it, which is far more reliable than hunting
+# the map by eye. Icons sit at y~0.893, labels at y~0.951.
+# ---------------------------------------------------------------------------
+resource_tabs:
+  icon_y: 0.893
+  label_y: 0.951
+  tabs:
+    - {resource: darklings, label: ダークリング部隊, x: 0.167}
+    - {resource: gold,      label: 金鉱,           x: 0.337}
+    - {resource: wood,      label: 伐採場,         x: 0.500}
+    - {resource: ore,       label: 鉄鉱,           x: 0.663}
+    - {resource: mana,      label: 魔力水場,       x: 0.830}
+  note: >
+    There is NO gem tab — the bar does not scroll, it holds exactly these five.
+    Gem nodes have to be found on the map by eye, which is why a map-sprite
+    prototype is worth having for them. OCR reads 鉄鉱 as 鈇鉱, so match these
+    labels loosely or go by position.
 
 # ---------------------------------------------------------------------------
 skills:
@@ -275,6 +313,96 @@ skills:
       expect: "a march at the node's coordinates with status 採集中 <hh:mm:ss>"
     evidence: >
       20,952 ドラフトホース, heroes パン/ザザ, X:988 Y:845, 採集中 02:22:39
+
+  - name: auto_farm
+    verified: true
+    description: >
+      Fill every free march slot with a gathering march. The core economy loop:
+      while a slot is free, find a vacant resource node of the wanted type and
+      send a gatherer to it.
+    preconditions: [on_map]
+    parameters:
+      resource: gold | wood | ore | mana   # see resource_tabs below
+      level: 1-10, the node level to look for
+    procedure:
+      - action: skill
+        skill: check_marches
+        note: >
+          Read the N/5 counter in the 部隊管理 header. OCR it with the pattern
+          (\d+)/(\d+) — the icon beside it bleeds into the text ("S,4/5"), but
+          the digits come through. Numbers OCR reliably here; Japanese does not.
+      - action: stop_if
+        condition: used >= total
+        note: every slot busy; nothing to do until one returns
+      - action: tap
+        target: {x: 0.045, y: 0.787}
+        note: the magnifier on the left edge, opening the search panel
+      - action: tap
+        target: the resource tab along the bottom — see resource_tabs
+      - action: set
+        target: the level slider
+        note: >
+          Track runs x 0.252-0.413 at y 0.632, Lv.1 to Lv.10; − at x 0.231 and
+          + at x 0.443. Drag the knob rather than tapping ± ten times. Aim for
+          the level your other marches use: a Lv.1 node ties up a slot for hours
+          for almost nothing.
+      - action: tap
+        target:
+          semantic: search
+          visual: {prototype: farlight_cod/search_button}
+          fallback: {x: 0.336, y: 0.732}
+      - action: observe
+        expect_panel: >
+          the camera has centred a node and selected it: title Lv.<n> <resource>,
+          fields 貯蔵量 / 採集者 / 所属同盟, footer 資源点 X:<n> Y:<n>
+        on_no_panel: >
+          no node of that level is in range. Lower the level and search again —
+          a Lv.10 gold search returned nothing while Lv.7 found one immediately.
+      - action: check
+        condition: "採集者 reads なし"
+        note: anything else means someone is already working it; search again
+      - action: tap
+        target:
+          semantic: gather
+          visual: {prototype: farlight_cod/gather_button}
+          fallback: {ocr: 採集}
+        note: >
+          Do NOT hardcode this one. The node panel is anchored to the node, so it
+          appears wherever the node landed — centre-left in one run, right in the
+          next.
+      - action: tap
+        target:
+          semantic: create_march
+          visual: {prototype: farlight_cod/create_march_button}
+          fallback: {ocr: 部隊作成}
+      - action: check
+        condition: >
+          the composition screen shows 輸送ユニット (ドラフトホース) with a non-zero
+          count and the second tab reads 採集, not ハント
+        note: >
+          The game swaps in a gathering party automatically for a resource
+          target — different heroes, transport troops instead of combat troops.
+          Combat units and ハント mean the wrong target was selected; back out.
+          Worth reading 積載量 against the node's 貯蔵量: a capacity below the
+          reserves leaves resources behind.
+      - action: tap
+        target:
+          semantic: march
+          visual: {prototype: farlight_cod/march_button}
+          fallback: {x: 0.828, y: 0.864}
+      - action: repeat
+        note: back to the top; the counter will have gone up by one
+    verify:
+      method: check_marches
+      expect: >
+        a new row at the node's coordinates with status 採集進軍中 (marching to
+        gather) which becomes 採集中 (gathering) on arrival. Both mean the slot
+        is in use.
+    evidence: >
+      run live from 4/5 to 5/5: Lv.10 gold found nothing, Lv.7 found a node with
+      貯蔵量 1,134,000 and 採集者 なし at X:990 Y:842; the march screen loaded
+      31,815 ドラフトホース with 積載量 1,145,340; after 進軍 the panel showed
+      5/5 with the new march 採集進軍中 00:00:02.
 
   - name: check_marches
     verified: true

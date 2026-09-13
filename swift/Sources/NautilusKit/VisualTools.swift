@@ -42,7 +42,8 @@ enum VisualMatcher {
     static let shortlist = 6
 
     static func find(
-        prototype: Prototype, frame: Frame, searchArea: NormRect, limit: Int
+        prototype: Prototype, frame: Frame, searchArea: NormRect, limit: Int,
+        scaleRange: (low: Double, high: Double)? = nil
     ) throws -> [VisualMatch] {
         guard let template = prototype.positives.compactMap(\.signature).first else {
             throw ToolFailure("prototype \(prototype.name) has no usable samples")
@@ -69,9 +70,23 @@ enum VisualMatcher {
         var proposals: [(score: Double, x: Int, y: Int, w: Int, h: Int)] = []
 
         // Widths to try, in working-buffer pixels.
+        //
+        // Derived from the range of sizes the prototype was taught at, widened
+        // at both ends — a map sprite scales with the camera, so the same node
+        // is a different size at every zoom. Teaching it at two zooms widens
+        // this automatically.
         let widths: [Double]
-        if let relative {
-            widths = sizeMultipliers.map { Double(width) * relative * $0 }
+        if let span = prototype.frameWidthRange {
+            let multipliers = scaleRange ?? (low: 0.6, high: 1.6)
+            let lo = span.low / max(searchArea.width, 1e-6) * multipliers.low
+            let hi = max(lo * 1.05, span.high / max(searchArea.width, 1e-6) * multipliers.high)
+            // Log-spaced: scale error is proportional, so equal ratios beat
+            // equal differences.
+            let steps = 9
+            widths = (0..<steps).map { index in
+                let t = Double(index) / Double(steps - 1)
+                return Double(width) * lo * pow(hi / lo, t)
+            }
         } else {
             widths = blindScales.map { Double(width) * $0 }
         }
@@ -329,6 +344,15 @@ public final class VisualFindTool: MCPTool {
                     "Report nothing below this (default 0.25). Scores are relative, not "
                         + "probabilities; see the description.", minimum: 0, maximum: 1),
                 "max_results": .property("integer", "How many candidates to return (default 3)."),
+                "scale_range": .object([
+                    "type": .string("array"),
+                    "description": .string(
+                        "Widen or narrow the size sweep, as [low, high] multipliers of the sizes "
+                            + "the prototype was taught at (default [0.6, 1.6]). Raise the high "
+                            + "end when the camera may be zoomed further in than when it was "
+                            + "learned, e.g. [0.4, 3.0] for a map sprite at an unknown zoom."),
+                    "items": .object(["type": .string("number")]),
+                ]),
             ],
             required: ["prototype"])
     }
@@ -347,9 +371,18 @@ public final class VisualFindTool: MCPTool {
         let floor = arguments["min_score"]?.doubleValue ?? 0.25
         let limit = arguments.optionalInt("max_results") ?? 3
 
+        var scaleRange: (low: Double, high: Double)?
+        if case .array(let bounds)? = arguments["scale_range"], bounds.count == 2,
+            let low = bounds[0].doubleValue, let high = bounds[1].doubleValue,
+            low > 0, high >= low
+        {
+            scaleRange = (low, high)
+        }
+
         let started = Date()
         let matches = try VisualMatcher.find(
-            prototype: prototype, frame: frame, searchArea: area.clamped(), limit: limit)
+            prototype: prototype, frame: frame, searchArea: area.clamped(), limit: limit,
+            scaleRange: scaleRange)
         let elapsed = Int(Date().timeIntervalSince(started) * 1000)
 
         let accepted = matches.filter { $0.score >= floor }

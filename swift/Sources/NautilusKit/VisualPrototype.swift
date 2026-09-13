@@ -226,6 +226,18 @@ public struct Prototype: Codable, Sendable {
         return all[all.count / 2]
     }
 
+    /// Smallest and largest on-screen width across the positives.
+    ///
+    /// A map sprite is drawn at whatever the current zoom dictates, so the same
+    /// node can be taught at very different sizes. Sweeping between the extremes
+    /// (widened at both ends) means learning one node at two zoom levels covers
+    /// everything in between, instead of a median that suits neither.
+    public var frameWidthRange: (low: Double, high: Double)? {
+        let all = positives.compactMap(\.width).filter { $0 > 0 }.sorted()
+        guard let low = all.first, let high = all.last else { return nil }
+        return (low, high)
+    }
+
     /// Median position it was taught at, if recorded.
     public var learnedCenter: (x: Double, y: Double)? {
         let xs = positives.compactMap(\.centerX).sorted()

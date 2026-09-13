@@ -1,0 +1,175 @@
+import BrowserAX
+import Foundation
+
+/// Browser control through semantics rather than pixels.
+///
+/// The Android side has to learn what a button *looks like*, because a game
+/// draws its own widgets and publishes nothing about them. A web page is the
+/// opposite: it already declares its roles and names, and macOS surfaces them
+/// for Safari and Chrome alike. So these tools speak in `button named "Sign in"`
+/// rather than in coordinates, and a skill written against them survives a site
+/// restyling its markup as long as the accessible semantics hold.
+///
+/// The backend is deliberately hidden. Every element reports where its facts
+/// came from — `ax` today — so a CDP backend could be added for Chrome without
+/// any skill above noticing.
+
+// MARK: - browser_observe
+
+@MainActor
+public final class BrowserObserveTool: MCPTool {
+    private let session: BrowserAXSession
+    public init(session: BrowserAXSession) { self.session = session }
+
+    public var name: String { "browser_observe" }
+    public var description: String {
+        "Read the page in the frontmost browser window as a list of elements — buttons, links, "
+            + "text fields, headings — each with a role, its accessible name, and an id. Use this "
+            + "instead of a screenshot: it is what the page says about itself, so it does not "
+            + "depend on layout, styling or language, and the ids can be acted on directly. Works "
+            + "the same for Safari and Chrome. Fall back to macos_capture_window only for things "
+            + "a page does not describe, such as a canvas, a chart or a map."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(properties: [
+            "app": .property("string", "Which browser, e.g. \"Safari\" or \"Chrome\". Default: whichever is running."),
+            "interactive_only": .property(
+                "boolean", "Only things that can be acted on — drop plain text and headings."),
+            "filter": .property(
+                "string", "Only elements whose name contains this (case-insensitive)."),
+            "limit": .property("integer", "Maximum elements to return (default 250)."),
+        ])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let snapshot = try session.observe(
+            preferred: arguments.optionalString("app"),
+            limit: arguments.optionalInt("limit") ?? BrowserAXSession.defaultElementLimit,
+            interactiveOnly: arguments.bool("interactive_only", default: false))
+
+        var elements = snapshot.elements
+        if let needle = arguments.optionalString("filter"), !needle.isEmpty {
+            elements = elements.filter {
+                $0.name.localizedCaseInsensitiveContains(needle)
+                    || ($0.value?.localizedCaseInsensitiveContains(needle) ?? false)
+            }
+        }
+
+        var payload: [String: JSONValue] = [
+            "app": .string(snapshot.app),
+            "title": .string(snapshot.title),
+            "page_epoch": .number(Double(snapshot.epoch)),
+            "elements": .array(elements.map(Self.describe)),
+            "count": .number(Double(elements.count)),
+        ]
+        payload["url"] = snapshot.url.map { JSONValue.string($0) } ?? .null
+        if snapshot.truncated { payload["truncated"] = .bool(true) }
+        if elements.isEmpty {
+            payload["note"] = .string(
+                "Nothing addressable was found. The page may still be loading, or its content may "
+                    + "be drawn rather than described — a canvas or WebGL view publishes no "
+                    + "semantics, and for those macos_capture_window plus image_ocr is the way.")
+        }
+        return MCPToolResult(text: try JSONValue.object(payload).serialized())
+    }
+
+    static func describe(_ element: BrowserElement) -> JSONValue {
+        var object: [String: JSONValue] = [
+            "id": .string(element.id),
+            "role": .string(element.role),
+            "name": .string(element.name),
+            "source": .string(element.source),
+        ]
+        if let value = element.value, value != element.name, !value.isEmpty {
+            object["value"] = .string(value.count > 200 ? String(value.prefix(200)) + "…" : value)
+        }
+        // Only worth saying when it is not the default; a list where every row
+        // repeats `enabled: true` is harder to read, not easier.
+        if !element.enabled { object["enabled"] = .bool(false) }
+        if element.focused { object["focused"] = .bool(true) }
+        return .object(object)
+    }
+}
+
+// MARK: - browser_activate
+
+@MainActor
+public final class BrowserActivateTool: MCPTool {
+    private let session: BrowserAXSession
+    public init(session: BrowserAXSession) { self.session = session }
+
+    public var name: String { "browser_activate" }
+    public var description: String {
+        "Activate an element from the last browser_observe by its id: press a button, follow a "
+            + "link, tick a checkbox. Pass the page_epoch that observation reported — if the page "
+            + "has changed since, the call is refused rather than acting on whatever now sits at "
+            + "that id. Observe again afterwards to see the result."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(
+            properties: [
+                "element_id": .property("string", "An id from browser_observe, e.g. \"e17\"."),
+                "page_epoch": .property(
+                    "integer", "The page_epoch of the observation that produced the id."),
+            ],
+            required: ["element_id"])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let id = try arguments.string("element_id")
+        let epoch = UInt64(arguments.optionalInt("page_epoch") ?? Int(session.epoch))
+        try session.activate(id, observedEpoch: epoch)
+        return MCPToolResult(
+            text: "Activated \(id). The page may have changed — browser_observe to see it, and "
+                + "note the ids are renewed each time.")
+    }
+}
+
+// MARK: - browser_set_value
+
+@MainActor
+public final class BrowserSetValueTool: MCPTool {
+    private let session: BrowserAXSession
+    public init(session: BrowserAXSession) { self.session = session }
+
+    public var name: String { "browser_set_value" }
+    public var description: String {
+        "Type into a text field from the last browser_observe, by id. Replaces whatever the field "
+            + "held. Unlike typing key by key this is not affected by keyboard layout or IME, so "
+            + "it handles non-ASCII text. Some fields only react to keystrokes; if a value looks "
+            + "accepted but the page does not respond, activate the field and use the device "
+            + "keyboard instead."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(
+            properties: [
+                "element_id": .property("string", "An id from browser_observe."),
+                "value": .property("string", "Text to put in the field."),
+                "page_epoch": .property(
+                    "integer", "The page_epoch of the observation that produced the id."),
+            ],
+            required: ["element_id", "value"])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let id = try arguments.string("element_id")
+        let value = try arguments.string("value")
+        let epoch = UInt64(arguments.optionalInt("page_epoch") ?? Int(session.epoch))
+        try session.setValue(id, to: value, observedEpoch: epoch)
+        return MCPToolResult(
+            text: "Set \(id) to \(value.count) character(s). browser_observe to confirm it took.")
+    }
+}
+
+/// The browser tools, or nothing at all when Accessibility is not granted —
+/// advertising controls that can only fail is worse than omitting them.
+@MainActor
+public func makeBrowserTools() -> [MCPTool] {
+    guard BrowserAXSession.isTrusted else { return [] }
+    let session = BrowserAXSession()
+    return [
+        BrowserObserveTool(session: session),
+        BrowserActivateTool(session: session),
+        BrowserSetValueTool(session: session),
+    ]
+}

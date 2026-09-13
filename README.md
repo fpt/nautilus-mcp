@@ -41,6 +41,9 @@ MCP client (Claude Code, …)
 | `visual_list` | what has been learned |
 | `android_read_text` | capture and read the screen's text in one call |
 | `android_look_for` | capture and locate a learned element in one call |
+| `browser_observe` | the page in Safari/Chrome as roles, names and ids |
+| `browser_activate` | press a button or follow a link by id |
+| `browser_set_value` | type into a field by id |
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are

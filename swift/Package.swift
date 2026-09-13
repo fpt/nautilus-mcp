@@ -32,7 +32,9 @@ let package = Package(
         // MCP protocol handling plus the tool implementations.
         .target(
             name: "NautilusKit",
-            dependencies: ["ScreenCapture", "TTS", "NautilusBridge", "FoundationModelsKit"],
+            dependencies: [
+                "ScreenCapture", "TTS", "NautilusBridge", "FoundationModelsKit", "BrowserAX",
+            ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Platform-neutral protocols and domain types. Kept because
@@ -59,6 +61,13 @@ let package = Package(
         .target(
             name: "TTS",
             dependencies: ["Util"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // macOS Accessibility: semantic access to a browser window. Separate
+        // from ScreenCapture because it reads structure, not pixels.
+        .target(
+            name: "BrowserAX",
+            dependencies: [],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .target(

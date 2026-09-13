@@ -310,6 +310,54 @@ Two consequences worth remembering:
 If ImageIO is ever healthy on a target machine, `ImageCoding` is the single
 place to revisit — nothing else touches image files.
 
+## Browser control — semantics, not pixels
+
+| tool | |
+|---|---|
+| `browser_observe` | the page as roles, names and ids |
+| `browser_activate` | press a button, follow a link, tick a checkbox |
+| `browser_set_value` | put text in a field |
+
+The Android side must learn what a button *looks like*, because a game draws its
+own widgets and publishes nothing about them. A web page is the opposite: it
+already declares its roles and names, and macOS surfaces them through
+Accessibility for Safari and Chrome alike. So these speak in
+`button named "Sign in"`, and a skill survives a site restyling its markup as
+long as the accessible semantics hold. No per-site icon learning at all.
+
+The backend is hidden: every element reports a `source` (`ax` today), so a CDP
+backend could be added for Chrome without any skill above noticing. The
+container-based `chromedp-container-mcp` is a separate project and is not wired
+in here — nautilus drives the real browser window on screen, with its real
+cookies and sessions.
+
+**Accessibility permission is required**, granted to the application that
+launches the server — the terminal or MCP client, not the browser — in System
+Settings → Privacy & Security → Accessibility. Without it the browser tools are
+not advertised at all and the reason is logged at startup. The symptom when it
+is missing is `kAXErrorAPIDisabled` (-25211) on every read.
+
+**The web tree is built lazily.** The first read after attaching returned 26
+nodes — Safari's own toolbar and nothing else — where a moment later the same
+window held 397 including 143 links. A thin result with no `AXWebArea` is
+therefore retried once rather than reported as an empty page.
+(`AXManualAccessibility`, which Chrome and Electron apps need, is unsupported on
+Safari and not required there.)
+
+### Element ids expire, exactly like frame ids
+
+A page re-renders constantly, so a handle from before a click may now point at
+something else. Same lesson as the frame store, same shape of fix: the session
+keeps a `page_epoch`, every action bumps it, and acting on an id from an older
+observation is refused with `{"error":"stale_element", …}` and a recovery hint.
+Selenium calls this `StaleElementReferenceException`.
+
+### When to fall back to pixels
+
+A canvas, a chart, a map or a WebGL view publishes no semantics. For those —
+and only those — `macos_capture_window` plus `image_ocr` is the answer. The
+split mirrors the game side: a fast semantic path, a slow visual one.
+
 ## Android controls
 
 Nine general primitives, with **no per-app code anywhere**: the intent is that
@@ -440,6 +488,11 @@ binary and `codesign -v` calls it valid.
 **No `android_` tools**: check `adb devices`. An `unauthorized` device needs the
 on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
 at startup.
+
+**No `browser_` tools**: Accessibility is not granted. Give it to the app that
+launches the server (terminal or MCP client), not to the browser, in System
+Settings → Privacy & Security → Accessibility, then restart that app. Note that
+re-signing the binary can invalidate an existing grant.
 
 **No `ask_local_model`**: the on-device model is unavailable (not Apple silicon,
 or Apple Intelligence off). Logged at startup; the tool is simply absent.

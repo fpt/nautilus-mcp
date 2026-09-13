@@ -94,7 +94,7 @@ public final class MCPServer {
         } catch let failure as ToolFailure {
             return Self.errorLine(id: id ?? .null, code: -32603, message: failure.message)
         } catch {
-            return Self.errorLine(id: id ?? .null, code: -32603, message: "\(error)")
+            return Self.errorLine(id: id ?? .null, code: -32603, message: Self.explain(error))
         }
     }
 
@@ -171,7 +171,7 @@ public final class MCPServer {
             // A tool that fails is a *result*, not a protocol error: MCP wants
             // the model to see the message and try something else, which a
             // JSON-RPC error would deny it.
-            let message = (error as? ToolFailure)?.message ?? "\(error)"
+            let message = Self.explain(error)
             return .object([
                 "content": .array([
                     .object(["type": .string("text"), "text": .string("\(name) failed: \(message)")])
@@ -179,6 +179,20 @@ public final class MCPServer {
                 "isError": .bool(true),
             ])
         }
+    }
+
+    /// The message a caller should actually read.
+    ///
+    /// `"\(error)"` prints an enum's case name and associated values —
+    /// `staleElement(id: "e1", observedEpoch: 5, currentEpoch: 0)` — which
+    /// throws away a carefully written explanation of what to do next. Anything
+    /// conforming to `LocalizedError` has said what it wants said.
+    static func explain(_ error: Error) -> String {
+        if let failure = error as? ToolFailure { return failure.message }
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            return description
+        }
+        return "\(error)"
     }
 
     // MARK: - Wire helpers

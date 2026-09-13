@@ -119,6 +119,17 @@ func runMain() async {
         VisualListTool(store: prototypes),
     ]
 
+    // Browser control through Accessibility. Absent entirely without the
+    // permission, with the reason on stderr — the same rule as everything else:
+    // a tool that is listed is a tool that works.
+    let browserTools = makeBrowserTools()
+    tools.append(contentsOf: browserTools.map { Optional($0) })
+    log(
+        browserTools.isEmpty
+            ? "no browser tools: Accessibility permission not granted — grant it to the app that "
+                + "launches this server in System Settings > Privacy & Security > Accessibility"
+            : "browser tools available (\(browserTools.count))")
+
     // Offered only where it exists. On a Mac without Apple Intelligence,
     // `make()` answers nil and ask_local_model simply is not in the list.
     let localModel = LocalModelTool.make()

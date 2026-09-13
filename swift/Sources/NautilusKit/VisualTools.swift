@@ -318,27 +318,53 @@ public final class VisualLearnTool: MCPTool {
                 ).clamped())
         }
 
-        let sample = PrototypeSample(
+        // Keep a patch of the surrounding scene, three times the element on each
+        // axis, so this sample doubles as a localization test: the matcher can
+        // be asked to find the element in it and scored against where we know it
+        // to be. Three times is enough to pose a real search without storing a
+        // whole frame per sample.
+        let context = NormRect(
+            x1: target.centerX - target.width * 1.5,
+            y1: target.centerY - target.height * 1.5,
+            x2: target.centerX + target.width * 1.5,
+            y2: target.centerY + target.height * 1.5
+        ).clamped()
+        let contextPixels = frame.pixels(in: context)
+        let targetInContext = context.localize(frame.toRoot(target)).map(NormRectCodable.init)
+
+        var sample = PrototypeSample(
             shape: Data(signature.raw).base64EncodedString(),
             featurePrint: FeaturePrint.compute(pixels).flatMap(FeaturePrint.encode),
             aspect: target.height > 0 ? target.width / target.height : 1,
             width: target.width, height: target.height,
             centerX: target.centerX, centerY: target.centerY,
             learnedAt: ISO8601DateFormatter().string(from: Date()),
-            note: arguments.optionalString("semantic"))
+            note: arguments.optionalString("semantic"),
+            contextFile: nil,  // filled in below, once the index is known
+            targetInContext: targetInContext)
 
         let index: Int
         if asNegative {
+            index = prototype.negatives.count + 1
+            if contextPixels != nil {
+                sample.contextFile = String(format: "context-negative-%03d.png", index)
+            }
             prototype.negatives.append(sample)
-            index = prototype.negatives.count
         } else {
+            index = prototype.positives.count + 1
+            if contextPixels != nil {
+                sample.contextFile = String(format: "context-sample-%03d.png", index)
+            }
             prototype.positives.append(sample)
-            index = prototype.positives.count
         }
         try store.save(prototype)
 
         let tag = asNegative ? "negative" : "sample"
         store.writePNG(pixels, named: String(format: "%@-%03d.png", tag, index), for: name)
+        if let contextPixels {
+            store.writePNG(
+                contextPixels, named: String(format: "context-%@-%03d.png", tag, index), for: name)
+        }
         var shapeImage: CGImage?
         if let rendered = PrototypeStore.image(of: signature) {
             store.writePNG(rendered, named: String(format: "shape-%@-%03d.png", tag, index), for: name)

@@ -111,6 +111,7 @@ func runMain() async {
         ImageCropTool(store: frames),
         ImageRegionsTool(store: frames),
         ImageDiffTool(store: frames),
+        ImageLoadTool(store: frames),
         // Visual recognition: OCR discovers what a thing is once, these find it
         // again afterwards without depending on font or language.
         VisualLearnTool(frames: frames, store: prototypes),

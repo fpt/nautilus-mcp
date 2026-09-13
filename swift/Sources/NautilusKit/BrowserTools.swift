@@ -25,14 +25,15 @@ public final class BrowserObserveTool: MCPTool {
 
     public var name: String { "browser_observe" }
     public var description: String {
-        "Read the page in the frontmost browser window as a list of elements — buttons, links, "
-            + "text fields, headings — each with a role, its accessible name, and an id. Use this "
+        "Read the page the browser is showing as a list of elements — buttons, links, text "
+            + "fields, headings — each with a role, its accessible name, and an id. Use this "
             + "instead of a screenshot: it is what the page says about itself, so it does not "
             + "depend on layout, styling or language, and the ids can be acted on directly. Works "
             + "the same for Safari and Chrome. The list covers the WHOLE page, not just what is "
-            + "scrolled into view, so reading a long page needs no scrolling. Fall back to "
-            + "macos_capture_window only for things a page does not describe, such as a canvas, a "
-            + "chart or a map."
+            + "scrolled into view, so reading a long page needs no scrolling. With several Chrome "
+            + "windows open the front one cannot always be identified; when the choice was a "
+            + "guess the reply says so in `window_ambiguous`. Fall back to macos_capture_window "
+            + "only for things a page does not describe, such as a canvas, a chart or a map."
     }
     public var inputSchema: JSONValue {
         .objectSchema(properties: [
@@ -76,6 +77,19 @@ public final class BrowserObserveTool: MCPTool {
         ]
         payload["url"] = snapshot.url.map { JSONValue.string($0) } ?? .null
         if snapshot.truncated { payload["truncated"] = .bool(true) }
+        // Which window is in front is not always knowable — see the picker in
+        // CDPSession. Saying so beats presenting a guess as the answer.
+        if let others = session.ambiguousWindows, !others.isEmpty {
+            payload["window_ambiguous"] = .object([
+                "read": .string(snapshot.title),
+                "other_windows": .array(others.map { JSONValue.string($0) }),
+                "why": .string(
+                    "Chrome is not the frontmost application, so no page reports focus and the "
+                        + "front window cannot be identified. This one was chosen because it is "
+                        + "visible. If it is the wrong page, click the window you mean and "
+                        + "observe again — the choice then sticks to it."),
+            ])
+        }
         if elements.isEmpty {
             payload["note"] = .string(
                 "Nothing addressable was found. The page may still be loading, or its content may "
@@ -190,10 +204,11 @@ public final class BrowserScrollTool: MCPTool {
 
     public var name: String { "browser_scroll" }
     public var description: String {
-        "Scroll the page in the frontmost browser window. Use it when browser_observe's list "
-            + "looks short or you are told the result was truncated — a long page is read in "
-            + "viewport-sized pieces. Element ids are renewed by scrolling, so observe again "
-            + "afterwards. This brings the browser to the front, which is visible on screen."
+        "Scroll the page the browser is showing. Use it when browser_observe's list looks short "
+            + "or you are told the result was truncated — a long page is read in viewport-sized "
+            + "pieces. Element ids are renewed by scrolling, so observe again afterwards. On "
+            + "Chrome this runs inside the page: nothing is raised and nothing moves on screen. "
+            + "On Safari, top and bottom are keystrokes and do bring the window to the front."
     }
     public var inputSchema: JSONValue {
         .objectSchema(
@@ -229,8 +244,9 @@ public final class BrowserBackTool: MCPTool {
     public var name: String { "browser_back" }
     public var description: String {
         "Go back in the browser's history — the way out of a page you did not mean to open. "
-            + "Element ids from before are invalid afterwards, so observe again. This brings the "
-            + "browser to the front, which is visible on screen."
+            + "Element ids from before are invalid afterwards, so observe again. On Chrome this "
+            + "runs inside the page and raises nothing; on Safari it is a keystroke, so the "
+            + "window is brought to the front and that is visible on screen."
     }
     public var inputSchema: JSONValue {
         .objectSchema(properties: [

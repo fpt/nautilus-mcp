@@ -24,6 +24,7 @@ public final class CDPSession: BrowserBackend {
     private var connection: CDPConnection?
     private var targetID: String?
     private var elementCount = 0
+    public private(set) var ambiguousWindows: [String]?
 
     public init(port: Int = CDPSession.defaultPort) { self.port = port }
 
@@ -60,55 +61,86 @@ public final class CDPSession: BrowserBackend {
         }
     }
 
-    /// Connect to the tab the user is actually looking at.
-    ///
-    /// `/json/list` has no "this is the front tab" flag and its order is not a
-    /// promise, so the tab is identified by asking the pages themselves:
-    /// `document.visibilityState` is `visible` only for the active tab of a
-    /// window. The chosen target is cached and re-checked, because with nine
-    /// tabs open a scan on every call would mean nine websocket handshakes.
-    private func activeConnection() async throws -> CDPConnection {
-        if let connection, let targetID {
-            if let state = try? await connection.evaluate("document.visibilityState") as? String,
-                state == "visible",
-                try await pageTargets().contains(where: { ($0["id"] as? String) == targetID })
-            {
-                return connection
-            }
-            connection.close()
-            self.connection = nil
-            self.targetID = nil
-        }
+    private struct Probe {
+        let id: String
+        let connection: CDPConnection
+        let focused: Bool
+        let visible: Bool
+        let title: String
+    }
 
+    /// Which window's page are we driving?
+    ///
+    /// `/json/list` will not say. Measured here: activating a different window
+    /// left its order completely unchanged, so position carries no information
+    /// — it is creation order, not z-order.
+    ///
+    /// The pages know a little more. `document.visibilityState` is `visible`
+    /// for the active tab of **every** window, so it separates tabs within a
+    /// window and says nothing about which window is in front; trusting it
+    /// alone is what made this read example.com while iana.org was frontmost.
+    /// `document.hasFocus()` is true in exactly one page and is the real
+    /// signal — but only while Chrome is the frontmost application, and the
+    /// normal case for this server is a caller in a terminal with Chrome
+    /// behind it, where every page answers false.
+    ///
+    /// So there are three rules, in order: follow focus when focus exists;
+    /// otherwise stay on the window already being driven, because a caller
+    /// part-way through a task means the window they have been working in; and
+    /// when neither applies, pick a visible one but record the others in
+    /// `ambiguousWindows` so the reply can admit it was a guess rather than
+    /// present it as the front window.
+    private func activeConnection() async throws -> CDPConnection {
         let targets = try await pageTargets()
         guard !targets.isEmpty else { throw CDPError.noPage(port: port) }
 
-        var fallback: (CDPConnection, String)?
+        var probes: [Probe] = []
         for target in targets {
             guard let id = target["id"] as? String,
                 let socket = target["webSocketDebuggerUrl"] as? String,
                 let url = URL(string: socket)
             else { continue }
-            let candidate = CDPConnection(url: url)
-            let state = try? await candidate.evaluate("document.visibilityState") as? String
-            if state == "visible" {
-                fallback?.0.close()
-                connection = candidate
-                targetID = id
-                return candidate
+            // Reuse the live socket for the tab we are already on; the rest are
+            // opened only to be asked this one question.
+            let candidate = (id == targetID ? connection : nil) ?? CDPConnection(url: url)
+            guard
+                let answer = try? await candidate.evaluate(
+                    "document.hasFocus() + '|' + document.visibilityState") as? String
+            else {
+                if candidate !== connection { candidate.close() }
+                continue
             }
-            // Keep the first that answered at all: a single minimized window
-            // has no visible tab, and driving it beats refusing to work.
-            if fallback == nil, state != nil {
-                fallback = (candidate, id)
-            } else {
-                candidate.close()
-            }
+            probes.append(
+                Probe(
+                    id: id, connection: candidate, focused: answer.hasPrefix("true"),
+                    visible: answer.hasSuffix("visible"),
+                    title: (target["title"] as? String) ?? (target["url"] as? String) ?? id))
         }
-        guard let fallback else { throw CDPError.noPage(port: port) }
-        connection = fallback.0
-        targetID = fallback.1
-        return fallback.0
+        guard !probes.isEmpty else { throw CDPError.noPage(port: port) }
+
+        let visible = probes.filter(\.visible)
+        let chosen: Probe
+        if let focused = probes.first(where: \.focused) {
+            chosen = focused
+            ambiguousWindows = nil
+        } else if let sticky = probes.first(where: { $0.id == targetID && $0.visible })
+            ?? probes.first(where: { $0.id == targetID })
+        {
+            chosen = sticky
+            ambiguousWindows = nil
+        } else {
+            chosen = visible.first ?? probes[0]
+            ambiguousWindows =
+                visible.count > 1 ? visible.filter { $0.id != chosen.id }.map(\.title) : nil
+        }
+
+        for probe in probes where probe.id != chosen.id && probe.connection !== connection {
+            probe.connection.close()
+        }
+        if connection !== chosen.connection { connection?.close() }
+        connection = chosen.connection
+        targetID = chosen.id
+        return chosen.connection
     }
 
     /// Wait until the document is worth reading.

@@ -373,11 +373,36 @@ That profile requirement is the real cost, and it is worth being honest about:
 the debugged Chrome is **not** the one holding your everyday logins unless you
 point `--user-data-dir` at a profile that does.
 
-**Which tab.** `/json/list` has no "this is the front one" flag and its order is
-not a promise, so the tab is identified by asking the pages themselves —
-`document.visibilityState` is `visible` only for the active tab of a window.
-The choice is cached and rechecked, because scanning nine tabs would otherwise
-mean nine websocket handshakes per call.
+**Which window, and the limit of knowing.** `/json/list` will not say: measured,
+activating a different window left its order completely unchanged, so position
+is creation order and carries no information at all.
+
+Asking the pages gets closer, but `document.visibilityState` answers a smaller
+question than it looks. It is `visible` for the active tab of **every** window —
+it separates tabs *within* a window and says nothing about which window is in
+front. Trusting it alone is what made `browser_observe` read example.com while
+iana.org sat frontmost, silently and with no sign anything was wrong.
+
+`document.hasFocus()` is true in exactly one page and is the real signal — but
+only while Chrome is the frontmost application. The normal case here is a caller
+working in a terminal with Chrome behind it, and then **every page answers
+false** and the front window is genuinely unknowable from inside the browser.
+
+So the picker has three rules, in order, and the third one owns up:
+
+| | |
+|---|---|
+| a page reports focus | drive it — this is certain |
+| otherwise, one is already being driven | stay there; a caller mid-task means the window they have been working in |
+| otherwise | take a visible one, and report `window_ambiguous` naming the others |
+
+The warning fires once, on the uncertain first pick, and stays quiet afterwards
+because the second rule has taken over. Clicking the window you want is the
+recovery: focus then decides it, and the choice sticks.
+
+Every target is probed on every call. The earlier version cached the decision to
+save websocket handshakes, which is what let a stale choice survive a window
+switch — the handshakes are local and cost less than the read they precede.
 
 **A document between pages reads as an empty one.** `activate` returns when the
 click is delivered, so the next call can land while `document.body` is still

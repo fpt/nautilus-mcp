@@ -35,6 +35,11 @@ public final class BrowserRouter: BrowserBackend {
 
     public var backendName: String { current?.backendName ?? "none" }
     public var epoch: UInt64 { current?.epoch ?? 0 }
+    // Every protocol requirement has to be forwarded, not inherited: the router
+    // is itself a `BrowserBackend`, so anything it leaves out is answered by the
+    // protocol's own default and the real backend is never asked. This one went
+    // missing first time round and silently swallowed the window warning.
+    public var ambiguousWindows: [String]? { current?.ambiguousWindows }
 
     /// Browsers that still answer through Accessibility. Chrome is absent on
     /// purpose — see the type comment.

@@ -30,6 +30,11 @@ public protocol BrowserBackend: AnyObject {
     var epoch: UInt64 { get }
     /// Which backend this is, for diagnostics: "ax" or "cdp".
     var backendName: String { get }
+    /// Titles of the other candidate windows when the last read could not tell
+    /// which window is in front; `nil` when the choice was certain. Only CDP
+    /// can be unsure — Accessibility is asked for the frontmost window and is
+    /// answered by the window server, which actually knows.
+    var ambiguousWindows: [String]? { get }
 
     func observe(preferred: String?, limit: Int, interactiveOnly: Bool) async throws
         -> BrowserSnapshot
@@ -45,4 +50,9 @@ public protocol BrowserBackend: AnyObject {
 /// Where the page scrolls: `down`/`up` move by viewports, `top`/`bottom` jump.
 public enum BrowserScrollDirection: String, Sendable {
     case down, up, top, bottom
+}
+
+extension BrowserBackend {
+    /// Certain by default: a backend that cannot be confused says nothing.
+    public var ambiguousWindows: [String]? { nil }
 }

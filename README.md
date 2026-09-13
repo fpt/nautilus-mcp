@@ -44,6 +44,8 @@ MCP client (Claude Code, …)
 | `browser_observe` | the page in Safari/Chrome as roles, names and ids |
 | `browser_activate` | press a button or follow a link by id |
 | `browser_set_value` | type into a field by id |
+| `browser_scroll` | scroll the page down, up, to top or bottom |
+| `browser_back` | go back in history |
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are

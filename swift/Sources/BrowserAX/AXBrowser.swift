@@ -138,21 +138,27 @@ public final class BrowserAXSession {
 
     // MARK: Reading
 
-    public func observe(
-        preferred: String? = nil, limit: Int = BrowserAXSession.defaultElementLimit,
-        interactiveOnly: Bool = false
-    ) throws -> BrowserSnapshot {
+    /// A located browser: which one, its process, and its frontmost window.
+    public struct Located {
+        public let name: String
+        public let app: NSRunningApplication
+        public let element: AXUIElement
+        public let window: AXUIElement
+    }
+
+    /// Find a running browser and its frontmost window.
+    public func locate(preferred: String? = nil) throws -> Located {
         guard Self.isTrusted else { throw BrowserAXError.notTrusted }
 
         let running = NSWorkspace.shared.runningApplications
-        var chosen: (name: String, pid: pid_t)?
+        var chosen: (name: String, app: NSRunningApplication)?
         for candidate in Self.supported {
             if let want = preferred,
                 !candidate.name.localizedCaseInsensitiveContains(want),
                 candidate.bundleID != want
             { continue }
             if let app = running.first(where: { $0.bundleIdentifier == candidate.bundleID }) {
-                chosen = (candidate.name, app.processIdentifier)
+                chosen = (candidate.name, app)
                 break
             }
         }
@@ -160,18 +166,28 @@ public final class BrowserAXSession {
             throw BrowserAXError.noBrowser(preferred.map { [$0] } ?? Self.supported.map(\.name))
         }
 
-        let app = AXUIElementCreateApplication(chosen.pid)
-        // The focused window, falling back to the first — a browser with a
-        // dialog up would otherwise report the wrong one.
+        let element = AXUIElementCreateApplication(chosen.app.processIdentifier)
         let window =
-            Self.value(app, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
-            ?? (Self.value(app, kAXWindowsAttribute) as? [AXUIElement])?.first
+            Self.value(element, kAXFocusedWindowAttribute).map { $0 as! AXUIElement }
+            ?? (Self.value(element, kAXWindowsAttribute) as? [AXUIElement])?.first
         guard let window else {
             // Nothing at all came back: on a modern macOS that is the API being
             // switched off for us, not a browser with no windows.
             throw Self.isTrusted
                 ? BrowserAXError.noWindow(chosen.name) : BrowserAXError.notTrusted
         }
+        return Located(name: chosen.name, app: chosen.app, element: element, window: window)
+    }
+
+    public func observe(
+        preferred: String? = nil, limit: Int = BrowserAXSession.defaultElementLimit,
+        interactiveOnly: Bool = false
+    ) throws -> BrowserSnapshot {
+        let located = try locate(preferred: preferred)
+        let chosen = (name: located.name, pid: located.app.processIdentifier)
+        let app = located.element
+        let window: AXUIElement? = located.window
+        guard let window else { throw BrowserAXError.noWindow(chosen.name) }
 
         // Safari builds the web area's tree lazily. The first read after
         // attaching can return the browser's own toolbar and nothing else — 26
@@ -281,6 +297,133 @@ public final class BrowserAXSession {
         }
         walk(window)
         return (found, nodes)
+    }
+
+    // MARK: Navigation and scrolling
+
+    /// Where the page scrolls: `down`/`up` move by viewports, `top`/`bottom` jump.
+    public enum ScrollDirection: String, Sendable {
+        case down, up, top, bottom
+    }
+
+    /// Scroll the page.
+    ///
+    /// Uses scroll-wheel events rather than Page Down, because Page Down goes
+    /// wherever the keyboard focus is: with the cursor in a search field it
+    /// types nothing and scrolls nothing, which reads as the tool silently
+    /// failing. A wheel event is delivered by POSITION, so it lands on the page
+    /// under it regardless of focus.
+    ///
+    /// `top` and `bottom` do use keys (⌘↑ / ⌘↓) — those are unambiguous and a
+    /// wheel cannot express "as far as it goes".
+    @discardableResult
+    public func scroll(
+        _ direction: ScrollDirection, pages: Double = 1, preferred: String? = nil
+    ) throws -> String {
+        let located = try locate(preferred: preferred)
+        let front = Self.bringForward(located)
+
+        switch direction {
+        case .top, .bottom:
+            guard front else {
+                throw BrowserAXError.actionFailed(
+                    "bring \(located.name) to the front (scrolling to \(direction.rawValue) "
+                        + "needs keystrokes, which go to the frontmost app)", .failure)
+            }
+            // Arrow keys, not Home/End: arrows are physical keys, so this does
+            // not depend on the keyboard layout.
+            try Self.key(direction == .top ? 126 : 125, flags: .maskCommand)
+            pageChanged()
+            return "Jumped to the \(direction.rawValue) of the page."
+
+        case .down, .up:
+            let frame = Self.frame(located.window) ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+            // Just under a viewport per page, so something stays on screen to
+            // anchor against — the way a human scrolls.
+            let total = frame.height * 0.85 * max(0.1, pages)
+            let sign: Double = direction == .down ? -1 : 1
+            let centre = CGPoint(x: frame.midX, y: frame.midY)
+            var moved: Double = 0
+            let step: Double = 120
+            while moved < total {
+                let delta = min(step, total - moved)
+                guard
+                    let event = CGEvent(
+                        scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                        wheel1: Int32(sign * delta), wheel2: 0, wheel3: 0)
+                else { break }
+                event.location = centre
+                event.post(tap: .cghidEventTap)
+                moved += delta
+                usleep(12000)
+            }
+            pageChanged()
+            return "Scrolled \(direction.rawValue) about \(Int(total)) points."
+        }
+    }
+
+    /// Go back in history.
+    ///
+    /// ⌘[ — verified against Safari, and Chrome binds it too. ⌘← was tried
+    /// first on the theory that arrow keys dodge keyboard-layout trouble, and
+    /// it simply is not Safari's binding: the keystroke arrived (⌘L focused the
+    /// address bar in the same test) and the page did not move.
+    ///
+    /// Pressing the toolbar's back button through AX would avoid keys
+    /// altogether, but that button's accessible name is localized — "Go back",
+    /// "戻る" — and searching the window for it finds the *page's* toolbar
+    /// first, which on GitHub is a row of issue filters.
+    @discardableResult
+    public func goBack(steps: Int = 1, preferred: String? = nil) throws -> String {
+        let located = try locate(preferred: preferred)
+        guard Self.bringForward(located) else {
+            throw BrowserAXError.actionFailed(
+                "bring \(located.name) to the front (going back needs a keystroke, which goes "
+                    + "to the frontmost app)", .failure)
+        }
+        let count = max(1, min(steps, 20))
+        for _ in 0..<count {
+            try Self.key(33, flags: .maskCommand)  // ⌘[
+            usleep(400_000)
+        }
+        pageChanged()
+        return "Went back \(count) step(s) in \(located.name)."
+    }
+
+    /// Key events go to the frontmost application, so the browser has to be it.
+    /// This is a visible side effect and the tool descriptions say so.
+    ///
+    /// Raised through Accessibility rather than `NSRunningApplication.activate()`.
+    /// macOS stops a background process taking focus, so `activate()` returns
+    /// without doing anything and without failing — the browser stays behind,
+    /// every keystroke lands in the terminal instead, and `browser_back`
+    /// silently does nothing. `AXFrontmost` is permitted to a process that
+    /// already holds Accessibility, which this one must.
+    @discardableResult
+    static func bringForward(_ located: Located) -> Bool {
+        if located.app.isActive { return true }
+        AXUIElementSetAttributeValue(
+            located.element, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        usleep(400_000)
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == located.app.processIdentifier
+        { return true }
+        // Last resort; usually a no-op from here, but harmless to try.
+        located.app.activate()
+        usleep(250_000)
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == located.app.processIdentifier
+    }
+
+    static func key(_ code: CGKeyCode, flags: CGEventFlags = []) throws {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
+            let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
+        else { throw BrowserAXError.actionFailed("synthesize key \(code)", .failure) }
+        down.flags = flags
+        up.flags = flags
+        down.post(tap: .cghidEventTap)
+        usleep(20000)
+        up.post(tap: .cghidEventTap)
     }
 
     // MARK: Attribute helpers

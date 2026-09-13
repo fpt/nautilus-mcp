@@ -27,8 +27,10 @@ public final class BrowserObserveTool: MCPTool {
             + "text fields, headings — each with a role, its accessible name, and an id. Use this "
             + "instead of a screenshot: it is what the page says about itself, so it does not "
             + "depend on layout, styling or language, and the ids can be acted on directly. Works "
-            + "the same for Safari and Chrome. Fall back to macos_capture_window only for things "
-            + "a page does not describe, such as a canvas, a chart or a map."
+            + "the same for Safari and Chrome. The list covers the WHOLE page, not just what is "
+            + "scrolled into view, so reading a long page needs no scrolling. Fall back to "
+            + "macos_capture_window only for things a page does not describe, such as a canvas, a "
+            + "chart or a map."
     }
     public var inputSchema: JSONValue {
         .objectSchema(properties: [
@@ -38,6 +40,11 @@ public final class BrowserObserveTool: MCPTool {
             "filter": .property(
                 "string", "Only elements whose name contains this (case-insensitive)."),
             "limit": .property("integer", "Maximum elements to return (default 250)."),
+            "include_frames": .property(
+                "boolean",
+                "Include each element's on-screen rectangle. Needed only when handing a position "
+                    + "to a pixel tool, or to tell what is currently scrolled into view — the "
+                    + "list itself covers the whole page either way."),
         ])
     }
 
@@ -47,6 +54,7 @@ public final class BrowserObserveTool: MCPTool {
             limit: arguments.optionalInt("limit") ?? BrowserAXSession.defaultElementLimit,
             interactiveOnly: arguments.bool("interactive_only", default: false))
 
+        let withFrames = arguments.bool("include_frames", default: false)
         var elements = snapshot.elements
         if let needle = arguments.optionalString("filter"), !needle.isEmpty {
             elements = elements.filter {
@@ -59,7 +67,8 @@ public final class BrowserObserveTool: MCPTool {
             "app": .string(snapshot.app),
             "title": .string(snapshot.title),
             "page_epoch": .number(Double(snapshot.epoch)),
-            "elements": .array(elements.map(Self.describe)),
+            "elements": .array(
+                elements.map { Self.describe($0, frames: withFrames) }),
             "count": .number(Double(elements.count)),
         ]
         payload["url"] = snapshot.url.map { JSONValue.string($0) } ?? .null
@@ -73,7 +82,7 @@ public final class BrowserObserveTool: MCPTool {
         return MCPToolResult(text: try JSONValue.object(payload).serialized())
     }
 
-    static func describe(_ element: BrowserElement) -> JSONValue {
+    static func describe(_ element: BrowserElement, frames: Bool = false) -> JSONValue {
         var object: [String: JSONValue] = [
             "id": .string(element.id),
             "role": .string(element.role),
@@ -87,6 +96,14 @@ public final class BrowserObserveTool: MCPTool {
         // repeats `enabled: true` is harder to read, not easier.
         if !element.enabled { object["enabled"] = .bool(false) }
         if element.focused { object["focused"] = .bool(true) }
+        if frames, let rect = element.frame {
+            object["frame"] = .object([
+                "x": .number(rect.origin.x.rounded()),
+                "y": .number(rect.origin.y.rounded()),
+                "w": .number(rect.width.rounded()),
+                "h": .number(rect.height.rounded()),
+            ])
+        }
         return .object(object)
     }
 }
@@ -161,6 +178,72 @@ public final class BrowserSetValueTool: MCPTool {
     }
 }
 
+// MARK: - browser_scroll
+
+@MainActor
+public final class BrowserScrollTool: MCPTool {
+    private let session: BrowserAXSession
+    public init(session: BrowserAXSession) { self.session = session }
+
+    public var name: String { "browser_scroll" }
+    public var description: String {
+        "Scroll the page in the frontmost browser window. Use it when browser_observe's list "
+            + "looks short or you are told the result was truncated — a long page is read in "
+            + "viewport-sized pieces. Element ids are renewed by scrolling, so observe again "
+            + "afterwards. This brings the browser to the front, which is visible on screen."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(
+            properties: [
+                "direction": .property(
+                    "string", "down, up, top or bottom. Default down."),
+                "pages": .numberProperty(
+                    "How many viewports to move, for up/down (default 1).", minimum: 0.1,
+                    maximum: 20),
+                "app": .property("string", "Which browser. Default: whichever is running."),
+            ])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let raw = (arguments.optionalString("direction") ?? "down").lowercased()
+        guard let direction = BrowserAXSession.ScrollDirection(rawValue: raw) else {
+            throw ToolFailure("direction must be down, up, top or bottom — got \(raw.debugDescription)")
+        }
+        let text = try session.scroll(
+            direction, pages: arguments["pages"]?.doubleValue ?? 1,
+            preferred: arguments.optionalString("app"))
+        return MCPToolResult(text: text + " Observe again: the ids have been renewed.")
+    }
+}
+
+// MARK: - browser_back
+
+@MainActor
+public final class BrowserBackTool: MCPTool {
+    private let session: BrowserAXSession
+    public init(session: BrowserAXSession) { self.session = session }
+
+    public var name: String { "browser_back" }
+    public var description: String {
+        "Go back in the browser's history — the way out of a page you did not mean to open. "
+            + "Element ids from before are invalid afterwards, so observe again. This brings the "
+            + "browser to the front, which is visible on screen."
+    }
+    public var inputSchema: JSONValue {
+        .objectSchema(properties: [
+            "steps": .property("integer", "How many pages back (default 1)."),
+            "app": .property("string", "Which browser. Default: whichever is running."),
+        ])
+    }
+
+    public func call(_ arguments: [String: JSONValue]) async throws -> MCPToolResult {
+        let text = try session.goBack(
+            steps: arguments.optionalInt("steps") ?? 1,
+            preferred: arguments.optionalString("app"))
+        return MCPToolResult(text: text + " Observe again: the ids have been renewed.")
+    }
+}
+
 /// The browser tools, or nothing at all when Accessibility is not granted —
 /// advertising controls that can only fail is worse than omitting them.
 @MainActor
@@ -171,5 +254,7 @@ public func makeBrowserTools() -> [MCPTool] {
         BrowserObserveTool(session: session),
         BrowserActivateTool(session: session),
         BrowserSetValueTool(session: session),
+        BrowserScrollTool(session: session),
+        BrowserBackTool(session: session),
     ]
 }

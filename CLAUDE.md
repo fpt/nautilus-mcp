@@ -317,6 +317,8 @@ place to revisit — nothing else touches image files.
 | `browser_observe` | the page as roles, names and ids |
 | `browser_activate` | press a button, follow a link, tick a checkbox |
 | `browser_set_value` | put text in a field |
+| `browser_scroll` | move the page: down, up, top, bottom |
+| `browser_back` | go back in history |
 
 The Android side must learn what a button *looks like*, because a game draws its
 own widgets and publishes nothing about them. A web page is the opposite: it
@@ -351,6 +353,45 @@ something else. Same lesson as the frame store, same shape of fix: the session
 keeps a `page_epoch`, every action bumps it, and acting on an id from an older
 observation is refused with `{"error":"stale_element", …}` and a recovery hint.
 Selenium calls this `StaleElementReferenceException`.
+
+### The element list is the whole page
+
+Scrolling does not change what `browser_observe` returns — measured, 78 elements
+at the top of a page and the same 78 at the bottom. Accessibility publishes the
+whole document, so **a long page needs no scrolling to read**.
+
+`browser_scroll` is therefore for two other things: making something visible for
+a pixel fallback, and provoking lazily-loaded content. That second one is real —
+scrolling a GitHub page two viewports took the count from 112 to 122.
+
+Element frames are in screen coordinates, so `include_frames` is what tells you
+what is actually in view. It is also how scrolling was verified: 80 of 98 shared
+elements moved up by 1360 points, two viewports' worth.
+
+### Input goes to two different places
+
+This decides which mechanism each action uses:
+
+| | routed by | so |
+|---|---|---|
+| scroll wheel | **position** | works without focus; lands on the page under the cursor |
+| keystrokes | **focus** | needs the browser frontmost |
+
+Hence `browser_scroll` up/down uses wheel events — Page Down would go wherever
+the caret happens to be, and with the cursor in a search field it scrolls
+nothing while looking like it worked. `top`/`bottom` and `back` need keys, so
+they raise the browser first and fail loudly if they cannot.
+
+**Raising it uses `AXFrontmost`, not `NSRunningApplication.activate()`.** macOS
+stops a background process taking focus, so `activate()` returns successfully
+and does nothing: the browser stays behind, keystrokes land in the terminal, and
+`browser_back` silently fails. `AXFrontmost` is permitted to a process that
+already holds Accessibility.
+
+**Back is ⌘[, not ⌘←.** ⌘← was the first guess, on the theory that arrow keys
+avoid keyboard-layout trouble. Safari does not bind it. The keystroke was
+arriving the whole time — ⌘L focused the address bar in the same test — the
+shortcut was simply wrong.
 
 ### When to fall back to pixels
 

@@ -319,6 +319,9 @@ place to revisit — nothing else touches image files.
 | `browser_set_value` | put text in a field |
 | `browser_scroll` | move the page: down, up, top, bottom |
 | `browser_back` | go back in history |
+| `browser_record_start` / `_stop` | watch what a **person** does in the browser |
+| `browser_events_read` | read that back as a trajectory; waits for them to finish |
+| `browser_events_clear` | start a fresh demonstration |
 
 The Android side must learn what a button *looks like*, because a game draws its
 own widgets and publishes nothing about them. A web page is the opposite: it
@@ -475,6 +478,136 @@ avoid keyboard-layout trouble. Safari does not bind it. The keystroke was
 arriving the whole time — ⌘L focused the address bar in the same test — the
 shortcut was simply wrong.
 
+## Recording a demonstration
+
+`browser_observe` answers "what is on the page now". The more valuable question
+is "what did the user just do", and the recorder answers that one. Someone
+working in their own Safari — already signed in, already past the SSO redirect
+and the passkey prompt — is demonstrating a task at no cost to anyone, and the
+result is the raw material a skill is distilled from.
+
+This is what a container-based browser cannot do at all. A throwaway Chromium
+has no cookies, no session and no person in it, so it can neither be shown a
+task nor reach anything behind a login. Here the person and the agent share one
+browser, so the demonstration and the replay happen in the same place.
+
+```
+browser_record_start → the user does the task → browser_events_read(wait_seconds: 120)
+```
+
+### macOS reports the consequences, not the causes
+
+Measured against Safari, and it decided the whole design:
+
+| | |
+|---|---|
+| navigation | `AXLoadComplete`, and `AXURL` on the web area is the real URL |
+| page title | `AXTitleChanged` on the window, twice per load |
+| typing | `AXValueChanged` carries the text as it is typed |
+| moving between fields | `AXFocusedUIElementChanged`, with role and name |
+| **a click** | **nothing at all** — Accessibility has no input event |
+| **a scroll** | **nothing at all** |
+
+So Accessibility alone records what happened *to* the page and misses what the
+person did. A click that navigates shows up only as the navigation; one that
+opens a menu, ticks a box, or does nothing is invisible.
+
+A `CGEventTap` supplies exactly the two that are missing, and
+`AXUIElementCopyElementAtPosition` turns a click at (411, 341) back into
+`link "Learn more"`. **The tap knows the verbs; Accessibility knows the nouns
+and the effects.**
+
+The hit test answers with the *deepest* node, which for a link is its
+`AXStaticText` child — measured, clicking "Learn more" resolved to the label,
+not to the link that actually navigated. So the resolver climbs to the nearest
+actionable ancestor.
+
+### It is deliberately not a keylogger
+
+A session event tap can see every keystroke in every application, and this one
+does not ask for them: it subscribes to mouse-down and scroll-wheel only, which
+is the smallest set covering what Accessibility cannot see. Typed text comes
+from `AXValueChanged` on Safari's focused field instead — already scoped to the
+browser, already naming the field it went into, and worth more to a trajectory
+than a stream of key codes.
+
+Two further limits for the same reason: recording starts on an explicit call and
+stops on another, and the value of a secure text field is never stored, only the
+fact that something was typed into one.
+
+### Focus is what makes the stream readable
+
+Raw Accessibility notifications are nowhere near a trajectory. Measured here:
+pressing ⌘L and typing four characters produced **about eighty**
+`AXValueChanged` in three hundred milliseconds — every suggestion row in the
+address-bar dropdown, every favicon beside one, the headings "Google
+Suggestions" and "Top Hit".
+
+One rule removes almost all of it: **report a value change only for the element
+that currently has keyboard focus.** A suggestion row is not focused; the field
+being typed into is. What survives is debounced per element, so a word typed one
+letter at a time becomes one `input` event carrying the finished text.
+
+Focus changes get the same scepticism. One ⌘L fired three of them for the same
+field, two on the window itself, so only focus landing on something typeable or
+pressable is reported — and the de-duplication key is updated **only for what is
+actually reported**, because letting a filtered-out window event update it let
+the address bar through twice in the same millisecond.
+
+### A gesture ends when something else happens
+
+Coalescing buys quiet at the cost of ordering. A scroll is written down 400ms
+after the wheel stops, so a page load one moment later took sequence 2 while the
+scroll that preceded it took 3 — a trajectory in the wrong order. A click, a
+focus change or a load now force-flushes whatever is in flight, because each of
+them definitively ends it.
+
+### Who did it
+
+Every event says `user` or `agent`, because a trajectory that cannot tell the
+demonstration from the replay is not a demonstration. Agent actions arrive by
+two routes and need two mechanisms:
+
+- **Synthesized input** — `browser_scroll`, `browser_back` — carries a magic
+  value in `.eventSourceUserData`, and the tap recognises its own reflection
+  exactly.
+- **`AXPress` and value writes** post no event at all. Their only trace is the
+  `AXValueChanged` or `AXLoadComplete` that follows, which looks precisely like
+  a person's, so there is nothing to tag: a short window after the call is
+  attributed to the agent instead.
+
+### Waiting means waiting until they stop
+
+Returning at the first event is the obvious implementation and the wrong one.
+Measured against a scripted demonstration — navigate, click, scroll, type — it
+answered after the navigation and reported one event, with the other three
+arriving seconds later to nobody. A demonstration is finished when the person
+stops, not when they start, so `wait_seconds` is a *budget* and the call returns
+once the browser has been quiet for `settle_seconds`.
+
+### The recorder owns a thread
+
+Both mechanisms deliver through a `CFRunLoop`, and this server's main thread is
+parked in the stdio loop. So the recorder starts a thread and runs a run loop
+there for as long as recording lasts.
+
+That has a consequence worth knowing: **which application is frontmost cannot
+come from an `NSWorkspace` notification**, because those are delivered on a main
+run loop that is not running. The cached value would have stayed at whatever was
+in front when recording began, and every click would have been discarded as
+belonging to another application. It comes from the system-wide Accessibility
+element instead, which answers from any thread.
+
+### Notifications are advisory
+
+The server declares the `logging` capability and pushes each recorded event as
+`notifications/message` while a recording runs, so nothing is sent unbidden.
+Being honest about what that buys: a notification is one-way and **does not wake
+a model**. Clients differ in whether they display, log or drop one, and none
+will interrupt an agent mid-turn. It is for a human watching the client's log,
+and for clients that grow better handling later — `browser_events_read` with
+`wait_seconds` remains the mechanism an agent should rely on.
+
 ### When to fall back to pixels
 
 A canvas, a chart, a map or a WebGL view publishes no semantics. For those —
@@ -579,6 +712,7 @@ nautilus-mcp/
 │   ├── NautilusMcp/     # executable: args + stdio loop
 │   ├── NautilusKit/     # MCP server + tools
 │   ├── BrowserAX/       # Accessibility backend (Safari, Edge) + shared model
+│   │                    # plus the demonstration recorder (observer + event tap)
 │   ├── BrowserCDP/      # Chrome over the DevTools protocol
 │   ├── ScreenCapture/   # WindowManager, OCR, ObjectDetector, ScreenPerception
 │   ├── FoundationModelsKit/, AgentCore/, TTS/, Util/
@@ -627,6 +761,11 @@ backend answering because no CDP endpoint was found. Chrome will not expose its
 page through Accessibility at all. Start Chrome with `--remote-debugging-port`
 and its own `--user-data-dir`, then restart the server; the startup log says
 which backends are live.
+
+**No `browser_record_*` tools**: they need Accessibility for both halves — the
+notifications to be delivered and the event tap to be allowed to exist — so
+unlike the control tools there is no CDP fallback. Same grant, same place, and
+it belongs to the application that launches the server.
 
 **No `ask_local_model`**: the on-device model is unavailable (not Apple silicon,
 or Apple Intelligence off). Logged at startup; the tool is simply absent.

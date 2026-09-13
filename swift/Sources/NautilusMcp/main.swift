@@ -26,7 +26,14 @@ func claimTransport() {
 }
 
 /// Write one line to the MCP stream, unbuffered.
+///
+/// Locked, because the recorder pushes notifications from its own thread while
+/// the main loop is writing replies. Two writers interleaving mid-line would
+/// corrupt the protocol just as surely as a stray `print`.
+let transportLock = NSLock()
 func writeLine(_ text: String) {
+    transportLock.lock()
+    defer { transportLock.unlock() }
     transport.write(Data((text + "\n").utf8))
 }
 
@@ -111,6 +118,9 @@ func runMain() async {
 
     // From here on stdout is the protocol; --help above still used it normally.
     claimTransport()
+    // The only thing allowed to write there unbidden, and only while a
+    // recording is running.
+    MCPNotifier.shared.attach { writeLine($0) }
 
     // macOS tools. WindowManager is @MainActor, which is why the whole server
     // loop lives here.
@@ -150,6 +160,13 @@ func runMain() async {
     let browser = await makeBrowserTools(cdpPort: cdpPort)
     tools.append(contentsOf: browser.tools.map { Optional($0) })
     log(browser.summary)
+
+    // Watching a person browse, rather than driving the browser. Separate
+    // because it needs Accessibility for both halves — the notifications and
+    // the event tap — where control can also be served by CDP alone.
+    let recording = makeBrowserEventTools()
+    tools.append(contentsOf: recording.tools.map { Optional($0) })
+    log(recording.summary)
 
     // Offered only where it exists. On a Mac without Apple Intelligence,
     // `make()` answers nil and ask_local_model simply is not in the list.

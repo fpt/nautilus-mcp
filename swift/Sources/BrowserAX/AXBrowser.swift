@@ -125,7 +125,7 @@ public final class BrowserAXSession: BrowserBackend {
     public var backendName: String { "ax" }
 
     /// Browsers this knows how to address, in preference order.
-    public static let supported: [(name: String, bundleID: String)] = [
+    nonisolated public static let supported: [(name: String, bundleID: String)] = [
         ("Safari", "com.apple.Safari"),
         ("Chrome", "com.google.Chrome"),
         ("Chrome Canary", "com.google.Chrome.canary"),
@@ -135,7 +135,7 @@ public final class BrowserAXSession: BrowserBackend {
     /// Roles worth showing a caller, mapped to plain names. An accessibility
     /// tree contains thousands of grouping nodes that are pure structure; a
     /// list dominated by them buries the handful of things that can be acted on.
-    static let roleNames: [String: String] = [
+    nonisolated static let roleNames: [String: String] = [
         kAXButtonRole: "button",
         "AXLink": "link",
         kAXTextFieldRole: "textbox",
@@ -296,6 +296,7 @@ public final class BrowserAXSession: BrowserBackend {
 
     /// Activate: press a button, follow a link, toggle a checkbox.
     public func activate(_ id: String, observedEpoch: UInt64) async throws {
+        AXBrowserRecorder.shared.markAgentAction()
         let node = try element(id, observedEpoch: observedEpoch)
         let code = AXUIElementPerformAction(node, kAXPressAction as CFString)
         guard code == .success else { throw BrowserAXError.actionFailed("press \(id)", code) }
@@ -305,6 +306,7 @@ public final class BrowserAXSession: BrowserBackend {
     /// Put text into a field. Focuses first, because some fields ignore a value
     /// written to them while they do not have focus.
     public func setValue(_ id: String, to text: String, observedEpoch: UInt64) async throws {
+        AXBrowserRecorder.shared.markAgentAction()
         let node = try element(id, observedEpoch: observedEpoch)
         AXUIElementSetAttributeValue(node, kAXFocusedAttribute as CFString, true as CFTypeRef)
         let code = AXUIElementSetAttributeValue(
@@ -350,6 +352,7 @@ public final class BrowserAXSession: BrowserBackend {
     ) async throws -> String {
         let located = try locate(preferred: preferred)
         let front = Self.bringForward(located)
+        AXBrowserRecorder.shared.markAgentAction()
 
         switch direction {
         case .top, .bottom:
@@ -381,6 +384,9 @@ public final class BrowserAXSession: BrowserBackend {
                         wheel1: Int32(sign * delta), wheel2: 0, wheel3: 0)
                 else { break }
                 event.location = centre
+                // So the recorder can tell this from a person's wheel.
+                event.setIntegerValueField(
+                    .eventSourceUserData, value: AXBrowserRecorder.agentEventMagic)
                 event.post(tap: .cghidEventTap)
                 moved += delta
                 usleep(12000)
@@ -403,6 +409,7 @@ public final class BrowserAXSession: BrowserBackend {
     /// first, which on GitHub is a row of issue filters.
     @discardableResult
     public func goBack(steps: Int = 1, preferred: String? = nil) async throws -> String {
+        AXBrowserRecorder.shared.markAgentAction()
         let located = try locate(preferred: preferred)
         guard Self.bringForward(located) else {
             throw BrowserAXError.actionFailed(
@@ -449,6 +456,10 @@ public final class BrowserAXSession: BrowserBackend {
         else { throw BrowserAXError.actionFailed("synthesize key \(code)", .failure) }
         down.flags = flags
         up.flags = flags
+        for event in [down, up] {
+            event.setIntegerValueField(
+                .eventSourceUserData, value: AXBrowserRecorder.agentEventMagic)
+        }
         down.post(tap: .cghidEventTap)
         usleep(20000)
         up.post(tap: .cghidEventTap)
@@ -456,12 +467,16 @@ public final class BrowserAXSession: BrowserBackend {
 
     // MARK: Attribute helpers
 
-    static func value(_ el: AXUIElement, _ key: String) -> CFTypeRef? {
+    // `nonisolated` because the recorder reads attributes from its own
+    // CFRunLoop thread. These only call AXUIElementCopyAttributeValue, which is
+    // safe off the main thread — the main-actor requirement on this class comes
+    // from AppKit and ScreenCaptureKit, not from Accessibility.
+    nonisolated static func value(_ el: AXUIElement, _ key: String) -> CFTypeRef? {
         var out: CFTypeRef?
         return AXUIElementCopyAttributeValue(el, key as CFString, &out) == .success ? out : nil
     }
 
-    static func string(_ el: AXUIElement, _ key: String) -> String? {
+    nonisolated static func string(_ el: AXUIElement, _ key: String) -> String? {
         guard let raw = value(el, key) else { return nil }
         if let s = raw as? String { return s.isEmpty ? nil : s }
         if let n = raw as? NSNumber { return n.stringValue }
@@ -474,7 +489,7 @@ public final class BrowserAXSession: BrowserBackend {
     /// from its markup — GitHub's issues tab announces itself as
     /// "Issues\n\n\u{a0}(1)" — which makes a listing hard to read and a name
     /// awkward to match on.
-    static func name(_ el: AXUIElement) -> String {
+    nonisolated static func name(_ el: AXUIElement) -> String {
         for key in [kAXTitleAttribute, kAXDescriptionAttribute, "AXLabel", kAXHelpAttribute] {
             if let s = string(el, key) { return tidy(s) }
         }
@@ -483,14 +498,14 @@ public final class BrowserAXSession: BrowserBackend {
         return ""
     }
 
-    static func tidy(_ text: String) -> String {
+    nonisolated static func tidy(_ text: String) -> String {
         text.replacingOccurrences(of: "\u{a0}", with: " ")
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
     }
 
-    static func frame(_ el: AXUIElement) -> CGRect? {
+    nonisolated static func frame(_ el: AXUIElement) -> CGRect? {
         guard let posRef = value(el, kAXPositionAttribute),
             let sizeRef = value(el, kAXSizeAttribute)
         else { return nil }

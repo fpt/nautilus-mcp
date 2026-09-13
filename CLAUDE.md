@@ -182,8 +182,9 @@ the matcher believes; matching itself reads only the JSON.
 
 | | |
 |---|---|
-| propose, cheaply | slide a window of the prototype's aspect over one luminance buffer, scoring by normalized cross-correlation — array arithmetic after a single CoreGraphics draw |
-| confirm, expensively | take the best few and compare with `VNGenerateImageFeaturePrintRequest`, which is what distinguishes this button from its neighbour |
+| propose, cheaply | slide a window of the prototype's aspect over one luminance buffer, scoring by normalized cross-correlation — array arithmetic after a single CoreGraphics draw. 24 survive, because the sweep lands on a grid and a real match once sat seventh, below a shortlist of six |
+| align, locally | nudge each survivor by a few pixels and scales. The refined box is offered **alongside** the coarse one rather than replacing it: refinement maximizes *shape* while the verdict is mostly *feature print*, and deciding on a proxy cost a known-good match 0.470 → 0.388 |
+| confirm, expensively | compare the finalists with `VNGenerateImageFeaturePrintRequest`, which is what distinguishes this button from its neighbour |
 
 Hard negatives are subtracted at the end, because a game's icons resemble each
 other and "similar enough" is not "the right one".

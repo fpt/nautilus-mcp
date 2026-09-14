@@ -591,7 +591,13 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
         }
         lock.unlock()
 
-        for event in toEmit { events.append(event) }
+        // Oldest first, by when the gesture *began*. The buffers are examined
+        // in a fixed order — scroll, then input — which has nothing to do with
+        // which happened first, so someone who starts typing and then scrolls
+        // before the field settles would have the scroll given the lower
+        // sequence number. That reverses the trajectory, and reverses it
+        // against these events' own timestamps, which are already `began`.
+        for event in toEmit.sorted(by: { $0.time < $1.time }) { events.append(event) }
     }
 
     private func emit(_ event: BrowserEvent) { events.append(event) }

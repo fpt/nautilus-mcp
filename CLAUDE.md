@@ -571,6 +571,14 @@ than as silence. Typing is capped at five, more loosely because each
 notification carries the field's whole value, so a late flush still has the
 complete text.
 
+When a flush empties both buffers at once they are written down **oldest
+first**, by when each gesture began. The buffers are examined in a fixed
+order — scroll, then input — which has nothing to do with which happened first,
+so someone who starts typing and then scrolls before the field settles would
+otherwise have the scroll given the lower sequence number, contradicting these
+events' own timestamps. Measured: typing at +0.34s and a scroll at +0.54s,
+forced out together by a click at +0.80s, come back in that order.
+
 **Stopping flushes what is in flight.** A demonstration that ends within the
 debounce window — 0.7s of the last keystroke, 0.4s of the last wheel movement —
 has its final gesture still sitting in a buffer, and that is precisely the last

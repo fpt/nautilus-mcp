@@ -137,7 +137,17 @@ func runMain() async {
 
     // From here on stdout is the protocol; --help above still used it normally.
     claimTransport()
-    log(config.summary)
+
+    // Startup decisions are logged to stderr, which no MCP client shows and no
+    // model can read — so they are kept as well, and macos_permissions hands
+    // them back when someone asks why a tool is missing.
+    var startupNotes: [String] = []
+    func note(_ text: String) {
+        startupNotes.append(text)
+        log(text)
+    }
+
+    note(config.summary)
     // The only thing allowed to write there unbidden, and only while a
     // recording is running.
     MCPNotifier.shared.attach { writeLine($0) }
@@ -179,20 +189,20 @@ func runMain() async {
     // is listed is a tool that works.
     let browser = await makeBrowserTools(cdpPort: cdpPort)
     tools.append(contentsOf: browser.tools.map { Optional($0) })
-    log(browser.summary)
+    note(browser.summary)
 
     // Watching a person browse, rather than driving the browser. Separate
     // because it needs Accessibility for both halves — the notifications and
     // the event tap — where control can also be served by CDP alone.
     let recording = makeBrowserEventTools()
     tools.append(contentsOf: recording.tools.map { Optional($0) })
-    log(recording.summary)
+    note(recording.summary)
 
     // Offered only where it exists. On a Mac without Apple Intelligence,
     // `make()` answers nil and ask_local_model simply is not in the list.
     let localModel = LocalModelTool.make()
     tools.append(localModel)
-    log(
+    note(
         localModel == nil
             ? "no ask_local_model: the on-device model is unavailable on this Mac"
             : "on-device model available")
@@ -212,11 +222,17 @@ func runMain() async {
                 tools.append(
                     AndroidLookForTool(observe: observe, frames: frames, prototypes: prototypes))
             }
-            log("bound Android device, \(androidTools.count) tool(s)")
+            note("bound Android device, \(androidTools.count) tool(s)")
         } catch {
-            log("no Android tools: \(error.localizedDescription)")
+            note("no Android tools: \(error.localizedDescription)")
         }
     }
+
+    // Always present, and the one deliberate exception to "a tool that is
+    // present is a tool that works": everything else removes itself when it
+    // cannot work, and this is what makes that absence answerable from the far
+    // side of the protocol, where stderr is not readable.
+    tools.append(PermissionsTool(startupNotes: startupNotes))
 
     let server = MCPServer(name: "nautilus-mcp", version: "0.1.0", optionalTools: tools)
 

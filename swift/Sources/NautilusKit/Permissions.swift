@@ -21,11 +21,29 @@ public enum Permissions {
     public struct Status: Sendable {
         public let name: String
         public let granted: Bool
-        /// What stops working without it.
-        public let gates: [String]
+        /// Tools that cannot do their job without it.
+        public let affects: [String]
+        /// Whether those tools vanish from `tools/list`, or stay and fail.
+        ///
+        /// The two grants genuinely differ, and saying so is the point of this
+        /// tool: a uniform claim would be wrong about one of them.
+        public let toolsRemoved: Bool
+        /// What actually happens without it.
+        public let whenDenied: String
         /// The System Settings pane, as a URL that opens it.
         public let settingsURL: String
-        public let note: String?
+
+        public init(
+            name: String, granted: Bool, affects: [String], toolsRemoved: Bool,
+            whenDenied: String, settingsURL: String
+        ) {
+            self.name = name
+            self.granted = granted
+            self.affects = affects
+            self.toolsRemoved = toolsRemoved
+            self.whenDenied = whenDenied
+            self.settingsURL = settingsURL
+        }
     }
 
     // MARK: Probes
@@ -111,29 +129,37 @@ public enum Permissions {
             Status(
                 name: "accessibility",
                 granted: accessibilityGranted,
-                gates: [
-                    "browser_observe", "browser_activate", "browser_set_value", "browser_scroll",
-                    "browser_back", "browser_record_start", "browser_record_stop",
-                    "browser_events_read", "browser_events_clear",
+                affects: [
+                    "browser_record_start", "browser_record_stop", "browser_events_read",
+                    "browser_events_clear", "browser_observe", "browser_activate",
+                    "browser_set_value", "browser_scroll", "browser_back",
                 ],
-                settingsURL: accessibilitySettingsURL,
-                note: accessibilityGranted
-                    ? nil
-                    : "Without it every Accessibility read fails with kAXErrorAPIDisabled "
-                        + "(-25211). Chrome can still be driven if it was started with "
-                        + "--remote-debugging-port, because that path does not use Accessibility "
-                        + "at all; Safari cannot, and neither can the demonstration recorder, "
-                        + "which also needs an event tap."),
+                toolsRemoved: true,
+                whenDenied:
+                    "Every Accessibility read fails with kAXErrorAPIDisabled (-25211), so the "
+                    + "tools are left out of tools/list rather than advertised. The recorder "
+                    + "(browser_record_*, browser_events_*) goes unconditionally: it needs "
+                    + "Accessibility for both halves, the notifications and the event tap, and "
+                    + "has no other backend. The control tools go only if Chrome is also not "
+                    + "listening on a DevTools port — with one live they stay, served by CDP, "
+                    + "and drive Chrome alone. The startup notes below say which happened.",
+                settingsURL: accessibilitySettingsURL),
             Status(
                 name: "screen_recording",
                 granted: screenRecordingGranted,
-                gates: ["macos_capture_window", "macos_read_text", "macos_detect_objects"],
-                settingsURL: screenRecordingSettingsURL,
-                note: screenRecordingGranted
-                    ? nil
-                    : "Without it capture returns nothing rather than failing, so a window "
-                        + "reads as empty. This grant needs the application to be restarted "
-                        + "after it is given — unlike Accessibility, which takes effect live."),
+                affects: [
+                    "macos_list_windows", "macos_capture_window", "macos_read_text",
+                    "macos_detect_objects",
+                ],
+                toolsRemoved: false,
+                whenDenied:
+                    "These stay in tools/list and fail when called — unlike Accessibility, this "
+                    + "grant is not checked while the server is assembling itself, so the tools "
+                    + "are built either way. ScreenCaptureKit is what refuses: every one of them "
+                    + "reaches the screen through SCShareableContent. The grant also needs the "
+                    + "owning application restarted before it takes effect, where Accessibility "
+                    + "is seen live.",
+                settingsURL: screenRecordingSettingsURL),
         ]
     }
 }

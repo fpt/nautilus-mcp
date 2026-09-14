@@ -19,10 +19,12 @@ public final class PermissionsTool: MCPTool {
     public nonisolated var name: String { "macos_permissions" }
     public nonisolated var description: String {
         "Check whether macOS has granted this server Accessibility and Screen Recording, and "
-            + "find out why any tool is missing. Use it when a tool you expected is not in the "
-            + "list, when screen capture comes back empty, or when a browser tool fails with a "
-            + "permission error — tools that need a grant remove themselves, and this is the "
-            + "only way to see why. The reply names the application the grant actually belongs "
+            + "find out why any tool is missing or failing. Use it when a tool you expected is "
+            + "not in the list, when screen capture comes back empty, or when a browser tool "
+            + "fails with a permission error. The two grants behave differently and the reply "
+            + "says which applies: without Accessibility the tools that need it are left out of "
+            + "the list entirely, while without Screen Recording the macos_ capture tools are "
+            + "still listed and fail when called. The reply names the application the grant "
             + "to, which is the one that LAUNCHED this server (your terminal or MCP client), "
             + "never nautilus-mcp itself. Optionally shows the system prompt or opens the right "
             + "Settings pane."
@@ -112,10 +114,17 @@ public final class PermissionsTool: MCPTool {
                     uniqueKeysWithValues: statuses.map { status in
                         var entry: [String: JSONValue] = [
                             "granted": .bool(status.granted),
-                            "gates": .array(status.gates.map { .string($0) }),
+                            "affects": .array(status.affects.map { .string($0) }),
                         ]
-                        if let note = status.note { entry["why_it_matters"] = .string(note) }
                         if !status.granted {
+                            // The two grants behave differently and the report
+                            // says so per permission. A blanket "the tools are
+                            // absent" was wrong about screen recording, whose
+                            // tools stay listed and fail when called.
+                            entry["effect"] = .string(
+                                status.toolsRemoved
+                                    ? "tools_removed_from_list" : "tools_listed_but_failing")
+                            entry["what_happens"] = .string(status.whenDenied)
                             entry["how_to_grant"] = .string(
                                 "System Settings → Privacy & Security → "
                                     + (status.name == "accessibility"
@@ -142,12 +151,28 @@ public final class PermissionsTool: MCPTool {
         }
         if !actions.isEmpty { payload["actions"] = .array(actions.map { .string($0) }) }
 
-        let missing = statuses.filter { !$0.granted }.map(\.name)
-        payload["summary"] = .string(
-            missing.isEmpty
-                ? "Accessibility and Screen Recording are both granted."
-                : "Not granted: \(missing.joined(separator: ", ")). Tools that need them are "
-                    + "absent from tools/list rather than failing when called.")
+        let missing = statuses.filter { !$0.granted }
+        if missing.isEmpty {
+            payload["summary"] = .string(
+                "Accessibility and Screen Recording are both granted.")
+        } else {
+            // Named separately, because what a denial does is not the same for
+            // both: one removes its tools, the other leaves them listed.
+            let removed = missing.filter(\.toolsRemoved).map(\.name)
+            let listed = missing.filter { !$0.toolsRemoved }.map(\.name)
+            var parts: [String] = []
+            if !removed.isEmpty {
+                parts.append(
+                    "\(removed.joined(separator: ", ")) not granted, so the tools needing it are "
+                        + "absent from tools/list")
+            }
+            if !listed.isEmpty {
+                parts.append(
+                    "\(listed.joined(separator: ", ")) not granted; those tools are still listed "
+                        + "and will fail when called")
+            }
+            payload["summary"] = .string(parts.joined(separator: ". ") + ".")
+        }
         return payload
     }
 }

@@ -104,15 +104,32 @@ not anything is granted.
 ```
 macos_permissions → {
   "permissions": {
-    "accessibility":    {"granted": false, "gates": ["browser_observe", …],
-                         "how_to_grant": "System Settings → … add Terminal, then restart it.",
-                         "settings_url": "x-apple.systempreferences:…"},
-    "screen_recording": {"granted": true,  "gates": ["macos_capture_window", …]}
+    "accessibility":    {"granted": false, "affects": ["browser_record_start", …],
+                         "effect": "tools_removed_from_list",
+                         "what_happens": "…kAXErrorAPIDisabled (-25211)…",
+                         "how_to_grant": "System Settings → … add Terminal, then restart it."},
+    "screen_recording": {"granted": true,  "affects": ["macos_capture_window", …]}
   },
   "grant_belongs_to": {"application": "Terminal", "bundle_id": "com.apple.Terminal", …},
   "startup": ["browser tools available (5): ax (Safari, Edge); no CDP endpoint…", …]
 }
 ```
+
+**The two grants do not behave the same way, and the report says which applies.**
+This is easy to get wrong, and was: a first version claimed uniformly that
+tools needing a grant are absent from `tools/list`.
+
+| | without the grant |
+|---|---|
+| Accessibility | the tools are **removed** — `makeBrowserTools` and `makeBrowserEventTools` return nothing |
+| Screen Recording | the `macos_` tools are **still listed and fail when called** — they are built unconditionally |
+
+The Accessibility row has a further wrinkle the report carries: the recorder
+(`browser_record_*`, `browser_events_*`) goes unconditionally, because it needs
+Accessibility for both halves and has no other backend, while the *control*
+tools go only if Chrome is also not on a DevTools port. With one live they stay,
+served by CDP, driving Chrome alone. A report that lumped them together would
+send someone hunting for a tool that is right there in the list.
 
 **It names the application the grant belongs to**, which is the single most
 useful thing in the reply. The grant is not `nautilus-mcp`'s; it belongs to
@@ -972,8 +989,9 @@ or Apple Intelligence off). Logged at startup; the tool is simply absent.
 
 **Screen capture returns nothing**: grant Screen Recording to the app that
 launched the server, then restart it. `macos_permissions` reports whether it is
-granted and names that application — capture fails by returning nothing rather
-than erroring, so a window simply reads as empty.
+granted and names that application. Note these tools are **not** removed when
+the grant is missing — they stay in the list and fail on the way to
+`SCShareableContent`, which every one of them goes through.
 
 **Anything is missing and it is not obvious why**: call `macos_permissions`. It
 is always present, reports both grants, and hands back the startup reasons that

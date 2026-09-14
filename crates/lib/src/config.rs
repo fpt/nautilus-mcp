@@ -41,7 +41,10 @@ mod tests {
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["tts"]["rate"], 0.5);
-        assert_eq!(v["tts"]["ja"]["voice"], "com.apple.voice.enhanced.ja-JP.Kyoko");
+        assert_eq!(
+            v["tts"]["ja"]["voice"],
+            "com.apple.voice.enhanced.ja-JP.Kyoko"
+        );
     }
 
     #[test]
@@ -50,6 +53,9 @@ mod tests {
         let message = format!("{err}");
         // The parser names the line; a config that fails silently is worse than
         // one that refuses to load.
-        assert!(message.contains("line") || message.contains("1"), "{message}");
+        assert!(
+            message.contains("line") || message.contains("1"),
+            "{message}"
+        );
     }
 }

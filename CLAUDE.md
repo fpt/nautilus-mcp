@@ -48,6 +48,7 @@ Rust contributes the Android controls and nothing else.
 | `android/tools.rs` | The `android_*` primitives as `ToolHandler`s. |
 | `tool.rs` | `ToolHandler` / `ToolResult`. |
 | `image.rs` | `ImageContent`, plus the PNG codec Swift borrows — see **ImageIO is unusable** below. |
+| `config.rs` | TOML, parsed here and handed to Swift as JSON — Swift has no parser and this project has no Swift dependencies. |
 | `nautilus.udl` | UniFFI interface definition. |
 
 The FFI surface is **generic on purpose**: `tools()` + `call(name, args_json)`.
@@ -60,7 +61,7 @@ Adding an Android primitive needs no `.udl` change and no regenerated bindings.
 | `NautilusMcp` | Executable. Argument parsing and the stdio loop — nothing else. |
 | `NautilusKit` | MCP protocol (`MCPServer`), the tool protocol, the `FrameStore`, and every tool implementation. Where the work is, and what the tests cover. |
 | `ScreenCapture` | WindowManager / OCR / ObjectDetector, plus `ScreenPerception`. macOS only. |
-| `TTS` | AVSpeechSynthesizer wrapper, behind the `say` tool. |
+| `TTS` | AVSpeechSynthesizer wrapper behind the `say` tool, plus the per-sentence language detection it needs — see **Configuration**. |
 | `FoundationModelsKit` | Apple's on-device model, in-process, behind `ask_local_model`. |
 | `AgentCore` | Protocols `FoundationModelsKit` and `ScreenPerception` are written against (`EnvironmentPerception`, `AgentBackend`). Kept for them; nothing else uses it. |
 | `Util` | Just the logger now. |
@@ -119,6 +120,96 @@ wrong by accident.
 MCP permits pipelining. Every tool here ultimately touches a single shared
 resource — one screen, one device, one speaker — so serializing is the honest
 behaviour, not a limitation to work around.
+
+## Configuration
+
+Optional, and TOML. Read from `--config <path>`, else `$NAUTILUS_CONFIG`, else
+`~/.config/nautilus/config.toml` if it is there. `config.example.toml` in the
+repo is a copyable starting point.
+
+```toml
+[tts]
+rate = 0.5              # defaults, for any language
+volume = 1.0
+
+[tts.en]
+voice = "com.apple.voice.enhanced.en-US.Ava"
+
+[tts.ja]
+voice = "com.apple.voice.enhanced.ja-JP.Kyoko"
+rate = 0.45             # Kyoko reads a little fast at the shared default
+```
+
+Sections under `[tts]` are keyed by **bare language code**, which is what
+detection returns. Everything is optional and inherits from `[tts]`; `--voice`
+still works and beats the file, because a flag typed just now should win over a
+file written last month.
+
+**An explicit path that is missing or malformed refuses to start**, while a
+missing default path is simply the normal case. Naming a path and silently being
+given defaults because of a typo is the failure that wastes an afternoon. The
+parser's own message comes through, line and column included:
+
+```
+nautilus-mcp: …/bad.toml: TOML parse error at line 1, column 5
+  |
+1 | [tts
+  |     ^
+invalid table header
+```
+
+An empty `NAUTILUS_CONFIG` means unset, not "a file named nothing" — that is how
+a shell says "ignore it". Unknown keys are ignored rather than rejected, so a
+config written for a later version still starts this one. What was loaded is
+logged at startup, because a config that is quietly not in effect is the thing
+worth preventing.
+
+**TOML is parsed by the Rust core and handed over as JSON.** Swift has no TOML
+parser and this project carries no Swift package dependencies; a hand-rolled
+subset parser would quietly reject valid TOML the day somebody writes an array.
+Same reasoning as the PNG codec, for a milder reason — there Swift's own library
+is broken, here it simply does not have one.
+
+### `say` picks a voice per sentence, because the wrong one is silent
+
+`AVSpeechSynthesizer` does not fall back when the voice and the text disagree.
+It returns normally, reports the utterance as finished, and plays **nothing**.
+Measured by synthesizing to a buffer rather than to the speakers:
+
+| | frames | peak amplitude |
+|---|---|---|
+| Japanese text, en-US voice | 256 | **0.0000** |
+| Japanese text, ja-JP voice | 54,465 | 0.7649 |
+| English text, en-US voice | 35,244 | 0.6831 |
+
+A tool answering `Spoke 44 character(s).` while the room stays quiet is the same
+class of failure as a stale frame: plausible output, no sign anything is wrong.
+So the voice is chosen from the text, per sentence:
+
+```
+"Mixed sentence test. 設定ファイルは TOML です。Back to English now."
+  → en-US:"Mixed sentence test." | ja-JP:"設定ファイルは TOML です。" | en-US:"Back to English now."
+```
+
+Sentences are the unit because that is where a voice change is inaudible; a
+passage broken mid-clause would sound like a fault. Consecutive sentences in one
+language are rejoined, so ordinary prose is still spoken as prose, and the caller
+is not told the speech finished until the **last** utterance has — completing on
+the first is how a bilingual sentence comes back half-said.
+
+Detection is **script first, statistics second**. Kana settle Japanese outright,
+where `NLLanguageRecognizer` asked about a short kanji-only phrase will happily
+answer Chinese — the scripts genuinely overlap, and guessing wrong costs the
+whole utterance. Han is deliberately left to the recogniser for that reason. A
+sentence too short to identify inherits the previous one's language rather than
+dropping to a default mid-paragraph.
+
+**Nothing has to be configured.** With no file at all, the best *installed* voice
+for the detected language is used — asking for the highest-quality `ja` voice
+finds Kyoko (Enhanced) with nobody naming it, and with no hardcoded table of
+language to locale. The config exists to pin a particular voice or slow one down.
+A configured voice that is not installed is warned about at startup, rather than
+failing silently at the first utterance.
 
 ## Perception: frames, regions, coordinates
 
@@ -746,6 +837,10 @@ make test           # both suites
 make install        # ~/bin/nautilus-mcp
 make list-tools     # what this machine offers
 
+# configuration (all optional)
+nautilus-mcp --config ./config.example.toml
+NAUTILUS_CONFIG=~/.config/nautilus/config.toml nautilus-mcp
+
 # after changing crates/lib/src/nautilus.udl
 make gen-uniffi
 ```
@@ -825,6 +920,13 @@ which backends are live.
 notifications to be delivered and the event tap to be allowed to exist — so
 unlike the control tools there is no CDP fallback. Same grant, same place, and
 it belongs to the application that launches the server.
+
+**`say` runs but nothing is heard**: the voice does not match the language of
+the text, and AVSpeechSynthesizer is silent rather than approximate in that
+case. It should not happen now — the voice is chosen per sentence — but a voice
+pinned in the config for the wrong language would do it. The startup log names
+the config in effect, and a configured voice that is not installed is warned
+about there too.
 
 **No `ask_local_model`**: the on-device model is unavailable (not Apple silicon,
 or Apple Intelligence off). Logged at startup; the tool is simply absent.

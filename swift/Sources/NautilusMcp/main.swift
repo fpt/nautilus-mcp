@@ -66,7 +66,12 @@ var usage: String { """
                                    Chrome must be started with
                                    --remote-debugging-port=<port>; since Chrome
                                    136 that also requires its own --user-data-dir.
-      --voice <identifier>         Voice for the `say` tool.
+      --config <path>              Configuration file (TOML). Default:
+                                   $NAUTILUS_CONFIG, else
+                                   ~/.config/nautilus/config.toml if it exists.
+      --voice <identifier>         Default voice for the `say` tool; overrides
+                                   the config file. A voice per language is set
+                                   in the config as [tts.en], [tts.ja], ...
       --prototypes <dir>           Where learned UI appearances live
                                    (default ./resources, or NAUTILUS_PROTOTYPES).
       --list-tools                 Print the tool names and exit.
@@ -81,6 +86,7 @@ func runMain() async {
     var listOnly = false
     var cdpPort: Int? = CDPSession.defaultPort
     var prototypeRoot = ProcessInfo.processInfo.environment["NAUTILUS_PROTOTYPES"]
+    var configPath: String?
 
     var args = Array(CommandLine.arguments.dropFirst())
     while let arg = args.first {
@@ -105,6 +111,8 @@ func runMain() async {
                 }
                 cdpPort = port
             }
+        case "--config":
+            configPath = args.isEmpty ? nil : args.removeFirst()
         case "--voice":
             voice = args.isEmpty ? nil : args.removeFirst()
         case "--prototypes":
@@ -116,8 +124,20 @@ func runMain() async {
         }
     }
 
+    // Before stdout is claimed, so a bad --config can still be reported plainly
+    // and the process can refuse to start. A server that silently ignores the
+    // configuration it was pointed at is worse than one that will not run.
+    let config: NautilusConfig
+    do {
+        config = try NautilusConfig.load(explicitPath: configPath, voiceOverride: voice)
+    } catch {
+        log(MCPServer.explain(error))
+        exit(2)
+    }
+
     // From here on stdout is the protocol; --help above still used it normally.
     claimTransport()
+    log(config.summary)
     // The only thing allowed to write there unbidden, and only while a
     // recording is running.
     MCPNotifier.shared.attach { writeLine($0) }
@@ -139,7 +159,7 @@ func runMain() async {
         CaptureWindowTool(manager: manager, store: frames),
         ReadTextTool(manager: manager),
         DetectObjectsTool(manager: manager),
-        SayTool(speech: TextToSpeech(config: .init(voice: voice))),
+        SayTool(speech: TextToSpeech(config: config.tts)),
         // Source-agnostic: these work on a frame from either capture tool.
         ImageOCRTool(store: frames),
         ImageCropTool(store: frames),

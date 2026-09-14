@@ -17,6 +17,14 @@ namespace nautilus_core {
 
     [Throws=NautilusError]
     string encode_png_base64(RawImage image);
+
+    // TOML for the Swift side, as JSON. Swift has no TOML parser and this
+    // project carries no Swift package dependencies; a hand-rolled subset
+    // parser would quietly reject valid TOML the day somebody writes an array,
+    // so the real one lives here and Swift decodes the JSON it already handles
+    // everywhere else.
+    [Throws=NautilusError]
+    string toml_to_json(string text);
 };
 
 // Uncompressed pixels, row-major RGBA8 — what CGImage can be built from

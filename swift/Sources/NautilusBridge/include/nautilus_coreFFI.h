@@ -291,6 +291,11 @@ RustBuffer uniffi_nautilus_core_fn_func_decode_png_base64(RustBuffer base64_png,
 RustBuffer uniffi_nautilus_core_fn_func_encode_png_base64(RustBuffer image, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_TOML_TO_JSON
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_FN_FUNC_TOML_TO_JSON
+RustBuffer uniffi_nautilus_core_fn_func_toml_to_json(RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_NAUTILUS_CORE_RUSTBUFFER_ALLOC
 RustBuffer ffi_nautilus_core_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -580,6 +585,12 @@ uint16_t uniffi_nautilus_core_checksum_func_decode_png_base64(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_ENCODE_PNG_BASE64
 #define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_ENCODE_PNG_BASE64
 uint16_t uniffi_nautilus_core_checksum_func_encode_png_base64(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_TOML_TO_JSON
+#define UNIFFI_FFIDEF_UNIFFI_NAUTILUS_CORE_CHECKSUM_FUNC_TOML_TO_JSON
+uint16_t uniffi_nautilus_core_checksum_func_toml_to_json(void
     
 );
 #endif

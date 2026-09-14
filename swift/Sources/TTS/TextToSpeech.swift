@@ -8,6 +8,11 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
     private let logger = Logger("TTS")
     private var isSpeaking = false
     private var completion: (() -> Void)?
+    /// How many queued utterances are still to finish. A passage that changes
+    /// language becomes several utterances, and the caller is not done until
+    /// the last of them has been spoken — completing on the first is how a
+    /// bilingual sentence would come back half-said.
+    private var pending = 0
     /// Whether speech is on. Initialized from config; can be toggled at runtime
     /// (e.g. `/listen` enables it when switching into voice mode).
     private var _enabled: Bool
@@ -16,59 +21,148 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
     public func setEnabled(_ on: Bool) { _enabled = on }
     public var enabled: Bool { _enabled }
 
-    /// Configuration for TTS
-    public struct Config {
-        public let enabled: Bool
-        public let voice: String?
-        public let rate: Float
-        public let pitchMultiplier: Float
-        public let volume: Float
+    /// How one language should sound.
+    ///
+    /// Every field is optional and falls back to the defaults, so a config that
+    /// only pins `[tts.ja] voice = "…"` changes nothing else.
+    public struct Voice: Sendable {
+        public var identifier: String?
+        public var rate: Float?
+        public var pitchMultiplier: Float?
+        public var volume: Float?
 
         public init(
-            enabled: Bool = true,
-            voice: String? = nil,
-            rate: Float = 0.5,
-            pitchMultiplier: Float = 1.0,
-            volume: Float = 1.0
+            identifier: String? = nil, rate: Float? = nil, pitchMultiplier: Float? = nil,
+            volume: Float? = nil
         ) {
-            self.enabled = enabled
-            self.voice = voice
+            self.identifier = identifier
             self.rate = rate
             self.pitchMultiplier = pitchMultiplier
             self.volume = volume
         }
     }
 
+    /// Configuration for TTS.
+    ///
+    /// `byLanguage` is keyed by bare language code — `en`, `ja` — which is what
+    /// `[tts.en]` and `[tts.ja]` in the config file become.
+    public struct Config: Sendable {
+        public let enabled: Bool
+        public let rate: Float
+        public let pitchMultiplier: Float
+        public let volume: Float
+        /// Used when nothing more specific matches.
+        public let voice: String?
+        public let byLanguage: [String: Voice]
+
+        public init(
+            enabled: Bool = true,
+            voice: String? = nil,
+            rate: Float = 0.5,
+            pitchMultiplier: Float = 1.0,
+            volume: Float = 1.0,
+            byLanguage: [String: Voice] = [:]
+        ) {
+            self.enabled = enabled
+            self.voice = voice
+            self.rate = rate
+            self.pitchMultiplier = pitchMultiplier
+            self.volume = volume
+            self.byLanguage = byLanguage
+        }
+    }
+
     private let config: Config
-    private let resolvedVoice: AVSpeechSynthesisVoice?
+    /// Resolved voices, keyed by language code. Built lazily: enumerating all
+    /// 185 installed voices for every utterance would be wasteful, and the set
+    /// does not change while the server runs.
+    private var voiceCache: [String: AVSpeechSynthesisVoice?] = [:]
+    private let cacheLock = NSLock()
 
     public init(config: Config) {
         self.config = config
         self._enabled = config.enabled
         self.synthesizer = AVSpeechSynthesizer()
-
-        // Resolve the voice at init time. If the configured identifier isn't
-        // installed (e.g. an *enhanced* voice that hasn't been downloaded), fall
-        // back to a default voice rather than going silent.
-        if let id = config.voice, let voice = AVSpeechSynthesisVoice(identifier: id) {
-            self.resolvedVoice = voice
-        } else {
-            if let id = config.voice {
-                // Can't use logger before super.init, print directly.
-                print("[TTS] WARNING: Voice '\(id)' is not installed on this system — "
-                    + "falling back to a default voice. Install it in System Settings ▸ "
-                    + "Accessibility ▸ Spoken Content ▸ System Voice ▸ Manage Voices, or "
-                    + "run /voices to pick one that's available.")
-            }
-            self.resolvedVoice = AVSpeechSynthesisVoice(language: "en-US")
-                ?? AVSpeechSynthesisVoice.speechVoices().first
-        }
-
         super.init()
         self.synthesizer.delegate = self
 
-        if let v = resolvedVoice {
-            logger.info("TTS voice: \(v.name) [\(v.identifier)]")
+        // Warn about a configured voice that is not installed — an *enhanced*
+        // voice that has never been downloaded is the usual case — rather than
+        // letting it fail silently at the first utterance.
+        for (language, voice) in config.byLanguage {
+            guard let id = voice.identifier else { continue }
+            if AVSpeechSynthesisVoice(identifier: id) == nil {
+                logger.warning(
+                    "[tts.\(language)] voice \"\(id)\" is not installed; falling back to the "
+                        + "best installed \(language) voice. Install it in System Settings > "
+                        + "Accessibility > Spoken Content > System Voice > Manage Voices.")
+            }
+        }
+        if let id = config.voice, AVSpeechSynthesisVoice(identifier: id) == nil {
+            logger.warning("[tts] voice \"\(id)\" is not installed; falling back.")
+        }
+    }
+
+    /// The voice to speak `language` with, in order of preference:
+    /// the one configured for it, the best installed voice for it, then the
+    /// configured default.
+    ///
+    /// The middle step is what makes an unconfigured Mac work: asking for the
+    /// highest-quality installed `ja` voice finds Kyoko (Enhanced) without
+    /// anybody naming it, and without a hardcoded table of language-to-locale.
+    func voice(for language: String?) -> AVSpeechSynthesisVoice? {
+        let key = language ?? ""
+        cacheLock.lock()
+        if let cached = voiceCache[key] {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        var resolved: AVSpeechSynthesisVoice?
+        if let language, let id = config.byLanguage[language]?.identifier {
+            resolved = AVSpeechSynthesisVoice(identifier: id)
+        }
+        if resolved == nil, let language {
+            resolved = AVSpeechSynthesisVoice.speechVoices()
+                .filter { $0.language.lowercased().hasPrefix(language.lowercased()) }
+                .max { $0.quality.rawValue < $1.quality.rawValue }
+        }
+        if resolved == nil, let id = config.voice {
+            resolved = AVSpeechSynthesisVoice(identifier: id)
+        }
+        if resolved == nil {
+            resolved = AVSpeechSynthesisVoice(language: "en-US")
+                ?? AVSpeechSynthesisVoice.speechVoices().first
+        }
+
+        cacheLock.lock()
+        voiceCache[key] = resolved
+        cacheLock.unlock()
+        return resolved
+    }
+
+    /// Per-language overrides on top of the defaults.
+    private func settings(for language: String?) -> (rate: Float, pitch: Float, volume: Float) {
+        let override = language.flatMap { config.byLanguage[$0] }
+        return (
+            override?.rate ?? config.rate,
+            override?.pitchMultiplier ?? config.pitchMultiplier,
+            override?.volume ?? config.volume
+        )
+    }
+
+    /// Build one utterance per language run in the text.
+    func utterances(for text: String) -> [AVSpeechUtterance] {
+        SpokenLanguage.segment(text).compactMap { segment in
+            guard let voice = voice(for: segment.language) else { return nil }
+            let utterance = AVSpeechUtterance(string: segment.text)
+            utterance.voice = voice
+            let tuned = settings(for: segment.language)
+            utterance.rate = tuned.rate
+            utterance.pitchMultiplier = tuned.pitch
+            utterance.volume = tuned.volume
+            return utterance
         }
     }
 
@@ -90,45 +184,8 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
     /// Speak the given text asynchronously
     /// - Parameter text: The text to speak
     public func speakAsync(_ text: String) async {
-        guard _enabled else {
-            logger.debug("TTS disabled, skipping speech")
-            return
-        }
-
-        let spoken = Self.sanitizeForSpeech(text)
-        guard !spoken.isEmpty else {
-            logger.debug("Empty text (after stripping reasoning), skipping speech")
-            return
-        }
-
-        // If already speaking, stop current speech
-        if isSpeaking {
-            logger.debug("Already speaking, stopping current speech")
-            stop()
-        }
-
         await withCheckedContinuation { continuation in
-            self.completion = {
-                continuation.resume()
-            }
-            self.isSpeaking = true
-
-            guard let voice = self.resolvedVoice else {
-                self.logger.error("No valid TTS voice configured, skipping speech")
-                self.isSpeaking = false
-                self.completion = nil
-                continuation.resume()
-                return
-            }
-
-            let utterance = AVSpeechUtterance(string: spoken)
-            utterance.voice = voice
-            utterance.rate = self.config.rate
-            utterance.pitchMultiplier = self.config.pitchMultiplier
-            utterance.volume = self.config.volume
-
-            self.logger.info("Speaking: \"\(spoken.prefix(50))\(spoken.count > 50 ? "..." : "")\"")
-            self.synthesizer.speak(utterance)
+            self.speak(text) { continuation.resume() }
         }
     }
 
@@ -150,29 +207,30 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
             return
         }
 
-        // If already speaking, stop current speech
         if isSpeaking {
             logger.debug("Already speaking, stopping current speech")
             stop()
         }
 
-        guard let voice = resolvedVoice else {
-            logger.error("No valid TTS voice configured, skipping speech")
+        // One utterance per language run — see SpokenLanguage for why a single
+        // voice for the whole passage is not good enough.
+        let queue = utterances(for: spoken)
+        guard !queue.isEmpty else {
+            logger.error("No usable TTS voice for this text, skipping speech")
             completion?()
             return
         }
 
         self.completion = completion
         isSpeaking = true
+        pending = queue.count
 
-        let utterance = AVSpeechUtterance(string: spoken)
-        utterance.voice = voice
-        utterance.rate = config.rate
-        utterance.pitchMultiplier = config.pitchMultiplier
-        utterance.volume = config.volume
+        let described = queue.map { utterance in
+            "\(utterance.voice?.language ?? "?"):\(utterance.speechString.prefix(24))"
+        }
+        logger.info("Speaking \(queue.count) segment(s): \(described.joined(separator: " | "))")
 
-        logger.info("Speaking: \"\(spoken.prefix(50))\(spoken.count > 50 ? "..." : "")\"")
-        synthesizer.speak(utterance)
+        for utterance in queue { synthesizer.speak(utterance) }
     }
 
     /// Stop current speech
@@ -180,6 +238,7 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
         guard isSpeaking else { return }
 
         logger.debug("Stopping speech")
+        pending = 0
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
         completion?()
@@ -253,14 +312,22 @@ public class TextToSpeech: NSObject, @unchecked Sendable {
 
 // MARK: - AVSpeechSynthesizerDelegate
 extension TextToSpeech: AVSpeechSynthesizerDelegate {
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        logger.info("Speech started")
-        print("🔊 TTS playback started")
+    // No `print` anywhere in here. stdout is the MCP transport, and this class
+    // has form: its startup announcement of the chosen voice is what first put
+    // a non-JSON line in the middle of the protocol. Diagnostics go through the
+    // logger, which writes to stderr.
+    public func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance
+    ) {
+        logger.debug("Speech started")
     }
 
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        logger.info("Speech finished")
-        print("🔊 TTS playback finished")
+    public func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
+    ) {
+        pending = max(0, pending - 1)
+        guard pending == 0 else { return }
+        logger.debug("Speech finished")
         isSpeaking = false
         completion?()
         completion = nil
@@ -274,8 +341,11 @@ extension TextToSpeech: AVSpeechSynthesizerDelegate {
         logger.debug("Speech continued")
     }
 
-    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    public func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
+    ) {
         logger.debug("Speech cancelled")
+        pending = 0
         isSpeaking = false
         completion?()
         completion = nil

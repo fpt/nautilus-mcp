@@ -204,7 +204,7 @@ public final class MCPServer {
     /// `staleElement(id: "e1", observedEpoch: 5, currentEpoch: 0)` — which
     /// throws away a carefully written explanation of what to do next. Anything
     /// conforming to `LocalizedError` has said what it wants said.
-    static func explain(_ error: Error) -> String {
+    nonisolated public static func explain(_ error: Error) -> String {
         if let failure = error as? ToolFailure { return failure.message }
         if let localized = error as? LocalizedError, let description = localized.errorDescription {
             return description

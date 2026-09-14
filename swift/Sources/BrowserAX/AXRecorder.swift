@@ -392,7 +392,9 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
     }
 
     /// Ask the window server, through Accessibility, which application has the
-    /// keyboard. One round trip, from any thread, no run loop needed.
+    /// keyboard. From any thread, no run loop needed, and effectively free —
+    /// measured at under a microsecond, so the tap calls it per event rather
+    /// than trusting the cached value.
     @discardableResult
     private func refreshFrontPID() -> pid_t {
         var pid: pid_t = 0
@@ -458,25 +460,33 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
         guard isRecording else { return }
         let tagged = event.getIntegerValueField(.eventSourceUserData) == Self.agentEventMagic
 
-        lock.lock()
-        var (front, mine, app) = (frontPID, browserPID, appElement)
-        lock.unlock()
         // A session tap sees every application. Anything outside the browser is
         // none of this recorder's business and is dropped before it is looked
         // at, let alone written down.
         //
-        // The cache is refreshed periodically, so a click that arrives just
-        // after the user switched to the browser can still see the old value.
-        // Rather than lose the first click of a demonstration, a miss is
-        // checked once against the live answer — one Accessibility round trip,
-        // and only on clicks that look like they belong to somebody else.
-        if front != mine { front = refreshFrontPID() }
-        guard front == mine, let app else { return }
+        // Asked fresh on every event rather than read from the cache. The
+        // cache is refreshed by the flush timer, which leaves a window of up to
+        // 200ms after the user switches away in which a click in another
+        // application still looks like the browser's — and the lookup is free,
+        // measured at under a microsecond because the Accessibility client
+        // library caches it, so there is nothing to save by skipping it.
+        let front = refreshFrontPID()
+        lock.lock()
+        let (mine, app) = (browserPID, appElement)
+        lock.unlock()
+        guard front == mine, app != nil else { return }
 
         switch type {
         case .leftMouseDown:
             let point = event.location
-            let hit = resolve(app, at: point)
+            let hit = resolve(at: point)
+            // Frontmost is not the same as topmost at this pixel: a panel, a
+            // Spotlight window or any non-activating window can sit over the
+            // browser while the browser still owns the keyboard. Hit-testing
+            // system-wide and checking who answered settles it — asking
+            // Safari's own tree would have answered with whatever Safari has
+            // underneath, which is not what was clicked.
+            if hit.foreign { return }
             flushPending(force: true)
             emit(
                 BrowserEvent(
@@ -518,24 +528,37 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
     /// is actionable — a click on empty page background — the hit itself is
     /// reported, because "clicked on nothing in particular" is still part of a
     /// trajectory.
-    private func resolve(_ app: AXUIElement, at point: CGPoint) -> (role: String?, name: String?) {
+    private func resolve(at point: CGPoint) -> (role: String?, name: String?, foreign: Bool) {
         var hit: AXUIElement?
         guard
-            AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+            AXUIElementCopyElementAtPosition(
+                AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &hit) == .success,
             let hit
-        else { return (nil, nil) }
+        else {
+            // Nothing answered. The frontmost check has already passed, so this
+            // is most likely a part of the browser that publishes nothing —
+            // worth recording as a click with no name rather than discarding.
+            return (nil, nil, false)
+        }
+
+        var owner: pid_t = 0
+        AXUIElementGetPid(hit, &owner)
+        lock.lock()
+        let mine = browserPID
+        lock.unlock()
+        guard owner == mine else { return (nil, nil, true) }
 
         var node = hit
         for _ in 0..<6 {
             let raw = BrowserAXSession.string(node, kAXRoleAttribute) ?? ""
             if Self.actionableRoles.contains(raw) {
-                return (BrowserAXSession.roleNames[raw] ?? raw, BrowserAXSession.name(node))
+                return (BrowserAXSession.roleNames[raw] ?? raw, BrowserAXSession.name(node), false)
             }
             guard let parent = BrowserAXSession.value(node, kAXParentAttribute) else { break }
             node = parent as! AXUIElement
         }
         let raw = BrowserAXSession.string(hit, kAXRoleAttribute) ?? ""
-        return (BrowserAXSession.roleNames[raw] ?? raw, BrowserAXSession.name(hit))
+        return (BrowserAXSession.roleNames[raw] ?? raw, BrowserAXSession.name(hit), false)
     }
 
     // MARK: - Coalescing

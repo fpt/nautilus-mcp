@@ -635,7 +635,27 @@ come from an `NSWorkspace` notification**, because those are delivered on a main
 run loop that is not running. The cached value would have stayed at whatever was
 in front when recording began, and every click would have been discarded as
 belonging to another application. It comes from the system-wide Accessibility
-element instead, which answers from any thread.
+element instead, which answers from any thread — and is asked on every tapped
+event rather than cached, because the lookup is free (measured at under a
+microsecond; the Accessibility client library caches it) and a cache refreshed
+on a timer leaves a window in which a click made just after switching away still
+looks like the browser's.
+
+**Frontmost is not the same as topmost at a given pixel.** A panel, a Spotlight
+window or any non-activating window can sit over the browser while the browser
+still owns the keyboard, and the terminal beside it is simply not covered by the
+browser's window at all. So a click is hit-tested through the **system-wide**
+element and the owner of whatever answers is checked against the browser.
+Asking the browser's own tree — the obvious thing — answers with whatever the
+browser has underneath that point, which is not what was clicked, leaving the
+frontmost check as the only thing between a click anywhere on screen and a
+recorded browser event. Measured with Safari frontmost for *both* clicks: one
+inside its window recorded as `button "Reply…"`, one 600 points to its left over
+Terminal recorded as nothing.
+
+A hit that resolves to another application is dropped; no answer at all still
+records a click with no name, because the frontmost check has already passed and
+parts of a browser publish nothing.
 
 ### Notifications are advisory
 

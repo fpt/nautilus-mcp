@@ -93,6 +93,45 @@ device attached there are no `android_` tools. Advertising a tool that always
 fails is worse than omitting it — a model reads the list as what the machine can
 do and will keep choosing it.
 
+**`macos_permissions` is the deliberate exception**, and is always present. The
+rule above has a blind spot: a tool that removed itself is indistinguishable,
+from the far side of the protocol, from one that never existed. The reason is
+logged — to **stderr**, which no MCP client displays and no model can read — so
+"why can I not capture the screen?" had no answer available to the thing asking.
+This tool exists precisely so absence can be explained, and it works whether or
+not anything is granted.
+
+```
+macos_permissions → {
+  "permissions": {
+    "accessibility":    {"granted": false, "gates": ["browser_observe", …],
+                         "how_to_grant": "System Settings → … add Terminal, then restart it.",
+                         "settings_url": "x-apple.systempreferences:…"},
+    "screen_recording": {"granted": true,  "gates": ["macos_capture_window", …]}
+  },
+  "grant_belongs_to": {"application": "Terminal", "bundle_id": "com.apple.Terminal", …},
+  "startup": ["browser tools available (5): ax (Safari, Edge); no CDP endpoint…", …]
+}
+```
+
+**It names the application the grant belongs to**, which is the single most
+useful thing in the reply. The grant is not `nautilus-mcp`'s; it belongs to
+whatever launched it. Telling someone to add `nautilus-mcp` to the Accessibility
+list sends them looking for a row that will never appear. The launcher is found
+by walking up the process tree to the first real application — an approximation
+of what TCC calls the responsible process, close enough to name the right row,
+and reported as a best guess rather than asserted.
+
+**`startup` carries the reasons the server recorded as it assembled itself** —
+which browser backends came up, why a device is missing, whether the on-device
+model exists — rather than re-deriving guesses at call time.
+
+`request` shows the system prompt and `open_settings` opens the pane; both are
+visible to the user, so both are opt-in. macOS shows the Screen Recording prompt
+**once per application, ever** — if it was declined before, nothing appears and
+Settings is the only route, which is why the reply always names the pane too.
+Accessibility takes effect live; Screen Recording needs a restart.
+
 ### Protocol version is negotiated, not asserted
 
 `initialize` echoes back the revision the client asked for when it is one we
@@ -932,7 +971,13 @@ about there too.
 or Apple Intelligence off). Logged at startup; the tool is simply absent.
 
 **Screen capture returns nothing**: grant Screen Recording to the app that
-launched the server, then restart it.
+launched the server, then restart it. `macos_permissions` reports whether it is
+granted and names that application — capture fails by returning nothing rather
+than erroring, so a window simply reads as empty.
+
+**Anything is missing and it is not obvious why**: call `macos_permissions`. It
+is always present, reports both grants, and hands back the startup reasons that
+otherwise only reach stderr.
 
 ## What is deliberately not here
 

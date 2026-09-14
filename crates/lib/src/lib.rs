@@ -21,6 +21,7 @@
 #![allow(clippy::empty_line_after_doc_comments)]
 
 pub mod android;
+pub mod config;
 pub mod image;
 pub mod tool;
 
@@ -51,6 +52,11 @@ pub fn decode_png_base64(base64_png: String) -> Result<RawImage, NautilusError> 
 /// Encode RGBA8 pixels as a base64 PNG for an MCP image block.
 pub fn encode_png_base64(image: RawImage) -> Result<String, NautilusError> {
     image::encode_png_base64(&image)
+}
+
+/// Parse TOML into JSON for the Swift side. See [`config`] for why.
+pub fn toml_to_json(text: String) -> Result<String, NautilusError> {
+    config::toml_to_json(text)
 }
 
 /// One tool, shaped for an MCP `tools/list` entry.

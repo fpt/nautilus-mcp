@@ -1,0 +1,23 @@
+# nautilus-mcp configuration.
+#
+# Copy to ~/.config/nautilus/config.toml, or point at it with --config or
+# NAUTILUS_CONFIG. Nothing here is required: with no file at all, the `say`
+# tool detects the language of each sentence and picks the best installed
+# voice for it. This file is for pinning a particular voice or tuning one.
+
+[tts]
+rate = 0.5        # 0.0 slowest .. 1.0 fastest; AVSpeechUtterance's scale
+volume = 1.0
+pitch = 1.0
+
+# Sections are keyed by bare language code, matching what detection returns.
+# List what is installed with:
+#   swift/.build/release/nautilus-mcp --help   # then see the docs, or:
+#   say -v '?'
+
+[tts.en]
+voice = "com.apple.voice.enhanced.en-US.Ava"
+
+[tts.ja]
+voice = "com.apple.voice.enhanced.ja-JP.Kyoko"
+rate = 0.45       # Kyoko reads a little fast at the shared default

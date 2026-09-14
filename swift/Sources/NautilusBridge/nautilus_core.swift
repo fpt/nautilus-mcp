@@ -1072,6 +1072,13 @@ public func encodePngBase64(image: RawImage)throws  -> String {
     )
 })
 }
+public func tomlToJson(text: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeNautilusError.lift) {
+    uniffi_nautilus_core_fn_func_toml_to_json(
+        FfiConverterString.lower(text),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1092,6 +1099,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nautilus_core_checksum_func_encode_png_base64() != 9914) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_nautilus_core_checksum_func_toml_to_json() != 3844) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_nautilus_core_checksum_method_androidcontroller_call() != 13175) {

@@ -105,7 +105,13 @@ public final class MCPServer {
             return .object([
                 "protocolVersion": .string(
                     Self.negotiate(params["protocolVersion"]?.stringValue)),
-                "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
+                // `logging` is declared because the recorder pushes events as
+                // they happen — see MCPNotifier for what that is and is not
+                // worth. Everything else here answers only when asked.
+                "capabilities": .object([
+                    "tools": .object(["listChanged": .bool(false)]),
+                    "logging": .object([:]),
+                ]),
                 "serverInfo": .object([
                     "name": .string(serverName), "version": .string(serverVersion),
                 ]),
@@ -116,6 +122,17 @@ public final class MCPServer {
             return nil
 
         case "ping":
+            return .object([:])
+
+        case "logging/setLevel":
+            guard let level = params["level"]?.stringValue,
+                MCPNotifier.shared.setLevel(level)
+            else {
+                throw ProtocolFailure(
+                    code: -32602,
+                    "logging/setLevel needs `level`, one of "
+                        + MCPNotifier.Level.allCases.map(\.rawValue).joined(separator: ", "))
+            }
             return .object([:])
 
         case "tools/list":

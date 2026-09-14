@@ -44,6 +44,24 @@ final class BrowserEventQueueTests: XCTestCase {
         XCTAssertTrue(page.more)
     }
 
+    /// The invariant the wait loop depends on. A page capped at `limit` stops
+    /// growing while events keep arriving, so counting what came back reads a
+    /// busy browser as a quiet one; `latest` is monotonic and does not.
+    func testLatestAdvancesWhileAFullPageStaysTheSameLength() {
+        let queue = BrowserEventQueue(capacity: 100)
+        for _ in 0..<3 { queue.append(BrowserEvent(kind: .click)) }
+        let first = queue.read(after: 0, limit: 3)
+        XCTAssertEqual(first.events.count, 3)
+        XCTAssertEqual(first.latest, 3)
+
+        for _ in 0..<5 { queue.append(BrowserEvent(kind: .input)) }
+        let second = queue.read(after: 0, limit: 3)
+        XCTAssertEqual(second.events.count, 3, "a full page does not grow")
+        XCTAssertEqual(second.events.map(\.seq), first.events.map(\.seq), "nor does it change")
+        XCTAssertEqual(second.latest, 8, "but the cursor still moves")
+        XCTAssertTrue(second.more)
+    }
+
     func testClearingKeepsSequenceNumbersMovingForward() {
         let queue = BrowserEventQueue(capacity: 10)
         queue.append(BrowserEvent(kind: .click))

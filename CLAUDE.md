@@ -562,6 +562,22 @@ scroll that preceded it took 3 — a trajectory in the wrong order. A click, a
 focus change or a load now force-flushes whatever is in flight, because each of
 them definitively ends it.
 
+A gesture may not coalesce forever, either. Debouncing on quiet alone has a
+hole — someone who keeps scrolling never goes quiet — and measured, six seconds
+of continuous wheel movement produced **no events at all**, the whole gesture
+waiting for a pause that never came. A scroll in flight for more than two
+seconds is written down anyway, so a long scroll is reported in pieces rather
+than as silence. Typing is capped at five, more loosely because each
+notification carries the field's whole value, so a late flush still has the
+complete text.
+
+**Stopping flushes what is in flight.** A demonstration that ends within the
+debounce window — 0.7s of the last keystroke, 0.4s of the last wheel movement —
+has its final gesture still sitting in a buffer, and that is precisely the last
+thing the person did. `browser_record_stop` flushes before stopping the run
+loop, on the calling thread, because the recorder thread is about to be told to
+exit and may never run its timer again.
+
 ### Who did it
 
 Every event says `user` or `agent`, because a trajectory that cannot tell the
@@ -576,6 +592,14 @@ two routes and need two mechanisms:
   a person's, so there is nothing to tag: a short window after the call is
   attributed to the agent instead.
 
+A coalesced event records the source it **arrived** with, not the one in force
+when it is flushed. Deciding at flush time gets it wrong in both directions: a
+gesture begun during the agent's window is credited to the user once that window
+closes, and one the user began before an agent action is credited to the agent.
+For the same reason a buffer is closed off rather than extended when the author
+changes — the agent scrolling through a page the user was already scrolling is
+two gestures, not one distance attributed to whoever moved last.
+
 ### Waiting means waiting until they stop
 
 Returning at the first event is the obvious implementation and the wrong one.
@@ -584,6 +608,13 @@ answered after the navigation and reported one event, with the other three
 arriving seconds later to nobody. A demonstration is finished when the person
 stops, not when they start, so `wait_seconds` is a *budget* and the call returns
 once the browser has been quiet for `settle_seconds`.
+
+Quiet is measured by the **latest sequence number**, never by how many events
+came back. A page is capped at `limit`, so once it is full its length stops
+changing while events keep arriving — a count-based check reads a busy browser
+as a quiet one and returns in the middle of the demonstration it was meant to
+wait out. Sequence numbers are monotonic and never reused, so they cannot say
+that.
 
 ### The recorder owns a thread
 

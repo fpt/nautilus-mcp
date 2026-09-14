@@ -158,17 +158,23 @@ public final class BrowserEventsReadTool: MCPTool {
         let budget = min(600, max(0, arguments["wait_seconds"]?.doubleValue ?? 0))
         let settle = min(60, max(0.2, arguments["settle_seconds"]?.doubleValue ?? 2))
         let deadline = Date().addingTimeInterval(budget)
+        // Progress is measured by the latest sequence issued, never by how many
+        // events came back. A page is capped at `limit`: once it is full its
+        // length stops changing while events keep arriving, so a count-based
+        // check reads a busy browser as a quiet one and returns in the middle
+        // of the demonstration it was supposed to wait out. Sequence numbers
+        // are monotonic and never reused, so they cannot say that.
         var page = recorder.events.read(after: after, limit: limit)
         var lastChange = Date()
-        var seen = page.events.count
+        var cursor = page.latest
         while Date() < deadline {
             guard recorder.isRecording else { break }
             // Quiet for long enough, and something to show for it.
-            if seen > 0, Date().timeIntervalSince(lastChange) > settle { break }
+            if !page.events.isEmpty, Date().timeIntervalSince(lastChange) > settle { break }
             try await Task.sleep(nanoseconds: 250_000_000)
             page = recorder.events.read(after: after, limit: limit)
-            if page.events.count != seen {
-                seen = page.events.count
+            if page.latest != cursor {
+                cursor = page.latest
                 lastChange = Date()
             }
         }

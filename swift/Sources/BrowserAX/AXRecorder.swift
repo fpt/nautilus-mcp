@@ -96,8 +96,30 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
     private var agentUntil = Date.distantPast
     private var lastFocusKey = ""
 
-    private var pendingScroll: (dy: Double, at: Date, role: String?, name: String?)?
-    private var pendingInput: (role: String, name: String, value: String, at: Date)?
+    /// Coalescing buffers. Each remembers the source it *arrived* with: a
+    /// gesture that began while the agent was acting is the agent's even if it
+    /// is written down after that window has closed, and one that began before
+    /// an agent action is not made the agent's by it. Deciding at flush time
+    /// got both of those backwards.
+    private var pendingScroll:
+        (dy: Double, at: Date, began: Date, source: BrowserEvent.Source)?
+    private var pendingInput:
+        (role: String, name: String, value: String, at: Date, began: Date,
+         source: BrowserEvent.Source)?
+
+    /// How long a gesture may stay in flight before it is written down anyway.
+    ///
+    /// Debouncing on quiet alone has a hole: someone who keeps scrolling never
+    /// goes quiet, so nothing is ever emitted. Measured — six seconds of
+    /// continuous wheel movement produced **no events at all**, the whole
+    /// gesture sitting in a buffer waiting for a pause that never came. A long
+    /// scroll is now reported in pieces, which is honest, rather than as
+    /// silence, which is not.
+    static let scrollMaxAge: TimeInterval = 2.0
+    /// Typing is capped more loosely: each notification carries the field's
+    /// whole value, so a late flush still has the complete text and only the
+    /// timing suffers.
+    static let inputMaxAge: TimeInterval = 5.0
 
     public init(capacity: Int = 2000) { self.events = BrowserEventQueue(capacity: capacity) }
 
@@ -193,6 +215,16 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
     }
 
     public func stopRecording() {
+        // Before anything else: a demonstration that ends within the debounce
+        // window — 0.7s of the last keystroke, 0.4s of the last wheel movement —
+        // has its final gesture still sitting in a buffer, and stopping the run
+        // loop would throw it away. Which is precisely the last thing the person
+        // did, and often the point of the whole demonstration.
+        //
+        // Flushed here rather than on the recorder thread because that thread is
+        // about to be told to exit and may never run the timer again.
+        if isRecording { flushPending(force: true) }
+
         lock.lock()
         recording = false
         let loop = runLoop
@@ -333,8 +365,13 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
                 BrowserAXSession.string(element, kAXSubroleAttribute) == "AXSecureTextField"
             let text =
                 secure ? "«secure field, not recorded»" : BrowserAXSession.string(element, kAXValueAttribute) ?? ""
+            let source = sourceNow()
+            // A run of typing that changes hands is two events, not one with a
+            // guessed author.
+            if pendingSourceDiffers(from: source, input: true) { flushPending(force: true) }
             lock.lock()
-            pendingInput = (role, BrowserAXSession.name(element), text, Date())
+            let began = pendingInput?.began ?? Date()
+            pendingInput = (role, BrowserAXSession.name(element), text, Date(), began, source)
             lock.unlock()
 
         default:
@@ -453,13 +490,18 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
             // how far a demonstration scrolled.
             var dy = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
             if dy == 0 { dy = Double(event.getIntegerValueField(.scrollWheelEventDeltaAxis1)) * 10 }
+            let source = sourceNow(tagged: tagged)
+            // The agent scrolling through a page the user was already scrolling
+            // is two gestures by two authors, so they are not accumulated into
+            // one distance attributed to whoever happened to be last.
+            if pendingSourceDiffers(from: source, input: false) { flushPending(force: true) }
             lock.lock()
             if var pending = pendingScroll {
                 pending.dy += dy
                 pending.at = Date()
                 pendingScroll = pending
             } else {
-                pendingScroll = (dy, Date(), nil, nil)
+                pendingScroll = (dy, Date(), Date(), source)
             }
             lock.unlock()
 
@@ -498,6 +540,17 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
 
     // MARK: - Coalescing
 
+    /// Is something buffered that a different author started? Checked before
+    /// adding to a buffer, so the one in flight is closed off first.
+    private func pendingSourceDiffers(from source: BrowserEvent.Source, input: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return input
+            ? (pendingInput.map { $0.source != source } ?? false)
+            : (pendingScroll.map { $0.source != source } ?? false)
+    }
+
+
     /// Write down anything that has gone quiet.
     ///
     /// Typing settles slower than scrolling because a person pauses mid-word
@@ -515,19 +568,25 @@ public final class AXBrowserRecorder: BrowserEventSource, @unchecked Sendable {
         var toEmit: [BrowserEvent] = []
 
         lock.lock()
-        if let scroll = pendingScroll, force || now.timeIntervalSince(scroll.at) > 0.4 {
+        if let scroll = pendingScroll,
+            force || now.timeIntervalSince(scroll.at) > 0.4
+                || now.timeIntervalSince(scroll.began) > Self.scrollMaxAge
+        {
             pendingScroll = nil
             let direction = scroll.dy < 0 ? "down" : "up"
             toEmit.append(
                 BrowserEvent(
-                    kind: .scroll, source: Date() < agentUntil ? .agent : .user,
+                    time: scroll.began, kind: .scroll, source: scroll.source,
                     value: "\(direction) \(Int(abs(scroll.dy))) points", url: lastURL))
         }
-        if let input = pendingInput, force || now.timeIntervalSince(input.at) > 0.7 {
+        if let input = pendingInput,
+            force || now.timeIntervalSince(input.at) > 0.7
+                || now.timeIntervalSince(input.began) > Self.inputMaxAge
+        {
             pendingInput = nil
             toEmit.append(
                 BrowserEvent(
-                    kind: .input, source: Date() < agentUntil ? .agent : .user, role: input.role,
+                    time: input.began, kind: .input, source: input.source, role: input.role,
                     name: input.name, value: input.value, url: lastURL))
         }
         lock.unlock()

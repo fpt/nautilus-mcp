@@ -105,12 +105,13 @@ public final class MCPServer {
             return .object([
                 "protocolVersion": .string(
                     Self.negotiate(params["protocolVersion"]?.stringValue)),
-                // `logging` is declared because the recorder pushes events as
-                // they happen — see MCPNotifier for what that is and is not
-                // worth. Everything else here answers only when asked.
+                // Only `tools`. `logging` was declared while the demonstration
+                // recorder pushed events as they happened; with the recorder
+                // gone nothing here ever speaks unbidden, and declaring a
+                // capability that can produce nothing is the same lie as
+                // advertising a tool that always fails.
                 "capabilities": .object([
-                    "tools": .object(["listChanged": .bool(false)]),
-                    "logging": .object([:]),
+                    "tools": .object(["listChanged": .bool(false)])
                 ]),
                 "serverInfo": .object([
                     "name": .string(serverName), "version": .string(serverVersion),
@@ -122,17 +123,6 @@ public final class MCPServer {
             return nil
 
         case "ping":
-            return .object([:])
-
-        case "logging/setLevel":
-            guard let level = params["level"]?.stringValue,
-                MCPNotifier.shared.setLevel(level)
-            else {
-                throw ProtocolFailure(
-                    code: -32602,
-                    "logging/setLevel needs `level`, one of "
-                        + MCPNotifier.Level.allCases.map(\.rawValue).joined(separator: ", "))
-            }
             return .object([:])
 
         case "tools/list":

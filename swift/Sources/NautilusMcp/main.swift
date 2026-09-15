@@ -1,5 +1,4 @@
 import Foundation
-import BrowserCDP
 import NautilusKit
 import ScreenCapture
 import TTS
@@ -27,9 +26,9 @@ func claimTransport() {
 
 /// Write one line to the MCP stream, unbuffered.
 ///
-/// Locked, because the recorder pushes notifications from its own thread while
-/// the main loop is writing replies. Two writers interleaving mid-line would
-/// corrupt the protocol just as surely as a stray `print`.
+/// Locked. Nothing writes here but the main loop now that the recorder is gone,
+/// but two writers interleaving mid-line would corrupt the protocol just as
+/// surely as a stray `print`, and the lock is free when uncontended.
 let transportLock = NSLock()
 func writeLine(_ text: String) {
     transportLock.lock()
@@ -61,11 +60,6 @@ var usage: String { """
     Options:
       --android <serial|auto|off>  Which Android device to bind (default: auto).
                                    "off" leaves the android_ tools out entirely.
-      --chrome-cdp <port|auto|off> Drive Chrome over the DevTools protocol
-                                   (default: auto, which probes 127.0.0.1:9222).
-                                   Chrome must be started with
-                                   --remote-debugging-port=<port>; since Chrome
-                                   136 that also requires its own --user-data-dir.
       --config <path>              Configuration file (TOML). Default:
                                    $NAUTILUS_CONFIG, else
                                    ~/.config/nautilus/config.toml if it exists.
@@ -84,7 +78,6 @@ func runMain() async {
     var androidSpec: String? = "auto"
     var voice: String? = ProcessInfo.processInfo.environment["NAUTILUS_TTS_VOICE"]
     var listOnly = false
-    var cdpPort: Int? = CDPSession.defaultPort
     var prototypeRoot = ProcessInfo.processInfo.environment["NAUTILUS_PROTOTYPES"]
     var configPath: String?
 
@@ -99,18 +92,6 @@ func runMain() async {
             listOnly = true
         case "--android":
             androidSpec = args.isEmpty ? nil : args.removeFirst()
-        case "--chrome-cdp":
-            let spec = args.isEmpty ? "auto" : args.removeFirst()
-            switch spec {
-            case "off": cdpPort = nil
-            case "auto": cdpPort = CDPSession.defaultPort
-            default:
-                guard let port = Int(spec), (1...65535).contains(port) else {
-                    log("--chrome-cdp wants a port, \"auto\" or \"off\" — got \(spec)")
-                    exit(2)
-                }
-                cdpPort = port
-            }
         case "--config":
             configPath = args.isEmpty ? nil : args.removeFirst()
         case "--voice":
@@ -148,9 +129,6 @@ func runMain() async {
     }
 
     note(config.summary)
-    // The only thing allowed to write there unbidden, and only while a
-    // recording is running.
-    MCPNotifier.shared.attach { writeLine($0) }
 
     // macOS tools. WindowManager is @MainActor, which is why the whole server
     // loop lives here.
@@ -183,20 +161,13 @@ func runMain() async {
         VisualListTool(store: prototypes),
     ]
 
-    // Browser control, through Accessibility for Safari and through the
-    // DevTools protocol for Chrome. Absent entirely when neither can serve,
-    // with the reason on stderr — the same rule as everything else: a tool that
-    // is listed is a tool that works.
-    let browser = await makeBrowserTools(cdpPort: cdpPort)
+    // Reading a browser page, through Accessibility. Read-only on purpose: the
+    // window belongs to the user, so nothing here clicks, types or navigates.
+    // Absent entirely without the grant, with the reason on stderr — the same
+    // rule as everything else: a tool that is listed is a tool that works.
+    let browser = makeBrowserTools()
     tools.append(contentsOf: browser.tools.map { Optional($0) })
     note(browser.summary)
-
-    // Watching a person browse, rather than driving the browser. Separate
-    // because it needs Accessibility for both halves — the notifications and
-    // the event tap — where control can also be served by CDP alone.
-    let recording = makeBrowserEventTools()
-    tools.append(contentsOf: recording.tools.map { Optional($0) })
-    note(recording.summary)
 
     // Offered only where it exists. On a Mac without Apple Intelligence,
     // `make()` answers nil and ask_local_model simply is not in the list.

@@ -60,6 +60,7 @@ Adding an Android primitive needs no `.udl` change and no regenerated bindings.
 |---|---|
 | `NautilusMcp` | Executable. Argument parsing and the stdio loop — nothing else. |
 | `NautilusKit` | MCP protocol (`MCPServer`), the tool protocol, the `FrameStore`, and every tool implementation. Where the work is, and what the tests cover. |
+| `BrowserAX` | Reading a browser window through Accessibility. Read-only: it drives nothing, and there is no `BrowserCDP` beside it any more. |
 | `ScreenCapture` | WindowManager / OCR / ObjectDetector, plus `ScreenPerception`. macOS only. |
 | `TTS` | AVSpeechSynthesizer wrapper behind the `say` tool, plus the per-sentence language detection it needs — see **Configuration**. |
 | `FoundationModelsKit` | Apple's on-device model, in-process, behind `ask_local_model`. |
@@ -104,14 +105,14 @@ not anything is granted.
 ```
 macos_permissions → {
   "permissions": {
-    "accessibility":    {"granted": false, "affects": ["browser_record_start", …],
+    "accessibility":    {"granted": false, "affects": ["browser_observe"],
                          "effect": "tools_removed_from_list",
                          "what_happens": "…kAXErrorAPIDisabled (-25211)…",
                          "how_to_grant": "System Settings → … add Terminal, then restart it."},
     "screen_recording": {"granted": true,  "affects": ["macos_capture_window", …]}
   },
   "grant_belongs_to": {"application": "Terminal", "bundle_id": "com.apple.Terminal", …},
-  "startup": ["browser tools available (5): ax (Safari, Edge); no CDP endpoint…", …]
+  "startup": ["browser tools available (1): browser_observe over ax (Safari, Edge)…", …]
 }
 ```
 
@@ -121,15 +122,14 @@ tools needing a grant are absent from `tools/list`.
 
 | | without the grant |
 |---|---|
-| Accessibility | the tools are **removed** — `makeBrowserTools` and `makeBrowserEventTools` return nothing |
+| Accessibility | `browser_observe` is **removed** — `makeBrowserTools` returns nothing |
 | Screen Recording | the `macos_` tools are **still listed and fail when called** — they are built unconditionally |
 
-The Accessibility row has a further wrinkle the report carries: the recorder
-(`browser_record_*`, `browser_events_*`) goes unconditionally, because it needs
-Accessibility for both halves and has no other backend, while the *control*
-tools go only if Chrome is also not on a DevTools port. With one live they stay,
-served by CDP, driving Chrome alone. A report that lumped them together would
-send someone hunting for a tool that is right there in the list.
+The Accessibility row used to carry a wrinkle, and no longer does: there were
+once two browser tool groups gated differently, the recorder going
+unconditionally while the control tools survived on a CDP endpoint. Both groups
+are gone. Accessibility now gates exactly one tool, and gates it by removal —
+which is a simpler thing to report and a simpler thing to get right.
 
 **It names the application the grant belongs to**, which is the single most
 useful thing in the reply. The grant is not `nautilus-mcp`'s; it belongs to
@@ -457,36 +457,55 @@ Two consequences worth remembering:
 If ImageIO is ever healthy on a target machine, `ImageCoding` is the single
 place to revisit — nothing else touches image files.
 
-## Browser control — semantics, not pixels
+## Browser reading — semantics, not pixels, and read-only
 
 | tool | |
 |---|---|
 | `browser_observe` | the page as roles, names and ids |
-| `browser_activate` | press a button, follow a link, tick a checkbox |
-| `browser_set_value` | put text in a field |
-| `browser_scroll` | move the page: down, up, top, bottom |
-| `browser_back` | go back in history |
-| `browser_record_start` / `_stop` | watch what a **person** does in the browser |
-| `browser_events_read` | read that back as a trajectory; waits for them to finish |
-| `browser_events_clear` | start a fresh demonstration |
 
-The Android side must learn what a button *looks like*, because a game draws its
-own widgets and publishes nothing about them. A web page is the opposite: it
-already declares its roles and names, and macOS surfaces them through
-Accessibility for Safari and Chrome alike. So these speak in
-`button named "Sign in"`, and a skill survives a site restyling its markup as
-long as the accessible semantics hold. No per-site icon learning at all.
+That is the whole browser surface. The Android side must learn what a button
+*looks like*, because a game draws its own widgets and publishes nothing about
+them. A web page is the opposite: it already declares its roles and names, and
+macOS surfaces them through Accessibility. So this speaks in
+`button named "Sign in"`, and what it reads survives a site restyling its markup
+as long as the accessible semantics hold. No per-site icon learning at all.
 
-The backend is hidden: every element reports a `source` — `ax` for macOS
-Accessibility, `cdp` for Chrome's DevTools protocol — so a skill does not know
-or care which answered. `BrowserRouter` picks: Safari and Edge go to AX, Chrome
-goes to CDP, and actions follow whichever backend served the last `observe`,
-because the ids they carry were minted there. The container-based
-`chromedp-container-mcp` is a separate project and is not wired in here —
-nautilus drives the real browser window on screen, with its real cookies and
-sessions.
+### The browser is read and never driven
 
-### Chrome closed the Accessibility door, so Chrome gets CDP
+There were four control tools here — `browser_activate`, `browser_set_value`,
+`browser_scroll`, `browser_back` — plus a demonstration recorder
+(`browser_record_*`, `browser_events_*`) and a Chrome backend over the DevTools
+protocol. All of it is gone, deliberately, and not as a gap waiting to be
+filled.
+
+The reason is the same thing that made this browser worth reading in the first
+place. Unlike a container-launched Chromium, the window this server can reach is
+the **user's own**: their cookies, their sessions, their screen, and their
+attention on it. That is exactly what makes a read valuable — nothing else can
+answer what is behind their login — and exactly what makes a write the wrong
+trade. An agent driving it is moving the pointer in the window a person is
+looking at, on whatever an id happened to resolve to this time round. A misread
+page costs a retry. A mis-click opens a link that cannot be un-opened.
+
+So the rule is now blunt enough that nothing has to weigh it per call: **this
+server does not click, type, scroll or navigate in a browser.** Anything that
+must act on one belongs above this server, in a client where a person can see it
+coming and stop it. The `say` tool is still here to ask them to do it.
+
+What went with that decision, so it is not rediscovered as a bug:
+
+| | |
+|---|---|
+| `BrowserBackend` | the protocol existed to hide *which* backend answered. With one reader left there is nothing to hide; `BrowserObserveTool` holds a `BrowserAXSession` directly |
+| `page_epoch` / `stale_element` | an epoch existed so an id minted before a click could be refused afterwards. Nothing takes an id back now, so there is nothing to refuse — `id` is a label for saying which element you mean within one listing, and the payload no longer carries an epoch |
+| the `logging` capability | declared only so the recorder could push events as they happened. With no producer left, `initialize` advertises `tools` alone and `logging/setLevel` answers `-32601`. Declaring a capability that can never emit is the same lie as advertising a tool that always fails |
+| the `CGEventTap` | the recorder's half that saw clicks and scrolls. This process no longer installs a system-wide input tap at all |
+
+`BrowserAXSession.source` still reports `"ax"` on every element. It is kept
+because a reply that says where it got its facts stays readable if a second
+reader is ever added beside this one.
+
+### Chrome publishes nothing, and that is now simply a limit
 
 Setting `AXManualAccessibility` — the documented way to ask Chromium to build
 its web tree for an assistive client — returns `kAXErrorAttributeUnsupported`
@@ -499,326 +518,61 @@ browser_observe → 43 elements, every one of them toolbar or tab strip,
 ```
 
 That is the whole page missing while the tool looks like it worked — the same
-class of failure as a stale frame, and the reason the startup log now says so
-out loud when no CDP endpoint is around.
+class of failure as a stale frame. It used to be covered by CDP, which asks the
+renderer directly and cannot be shut out that way; CDP went with the control
+tools, because reading was never the reason it was there. **So Chrome pages are
+unreadable, Safari and Edge answer properly, and both the startup summary and
+the empty-result note say so out loud** rather than letting a toolbar-only reply
+pass for a page.
 
-CDP asks the renderer directly and cannot be shut out that way. It is also
-better behaved for actions: scrolling and history are function calls inside the
-page rather than synthesized keystrokes, so **nothing is brought to the front
-and nothing depends on focus** — the opposite of the AX path, which must raise
-the window and fail loudly when it cannot.
+The cost of the old arrangement is worth remembering if it is ever revisited:
+Chrome since 136 refuses to open a debugging port for the default profile, so
+the debugged Chrome was **not** the one holding your everyday logins unless
+`--user-data-dir` pointed at a profile that did — which undercut the one
+advantage this server has over a container.
 
-```bash
-# Chrome must be started with the port. Since Chrome 136 it also refuses to
-# open it for the default profile, so it needs its own --user-data-dir.
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --remote-debugging-port=9222 --user-data-dir="$HOME/.nautilus-chrome"
+### Accessibility, and what the grant does and does not buy
 
-nautilus-mcp --chrome-cdp auto   # probe 127.0.0.1:9222 (default)
-nautilus-mcp --chrome-cdp 9333   # a different port
-nautilus-mcp --chrome-cdp off    # Accessibility only
-```
+`browser_observe` needs Accessibility, granted to the application that
+*launches* the server — the terminal or MCP client, not the browser, and not
+`nautilus-mcp` itself — in System Settings → Privacy & Security → Accessibility.
+The symptom when it is missing is `kAXErrorAPIDisabled` (-25211) on every read,
+and the tool is left out of `tools/list` rather than advertised.
 
-That profile requirement is the real cost, and it is worth being honest about:
-the debugged Chrome is **not** the one holding your everyday logins unless you
-point `--user-data-dir` at a profile that does.
+Worth saying plainly in the permissions report, and it is: the grant now buys
+**reading only**. There is no tool here that a grant would let touch someone's
+window. Accessibility takes effect live, so granting it and restarting the
+server is enough — no logout.
 
-**Which window, and the limit of knowing.** `/json/list` will not say: measured,
-activating a different window left its order completely unchanged, so position
-is creation order and carries no information at all.
+### The web tree is built lazily
 
-Asking the pages gets closer, but `document.visibilityState` answers a smaller
-question than it looks. It is `visible` for the active tab of **every** window —
-it separates tabs *within* a window and says nothing about which window is in
-front. Trusting it alone is what made `browser_observe` read example.com while
-iana.org sat frontmost, silently and with no sign anything was wrong.
-
-`document.hasFocus()` is true in exactly one page and is the real signal — but
-only while Chrome is the frontmost application. The normal case here is a caller
-working in a terminal with Chrome behind it, and then **every page answers
-false** and the front window is genuinely unknowable from inside the browser.
-
-So the picker has three rules, in order, and the third one owns up:
-
-| | |
-|---|---|
-| a page reports focus | drive it — this is certain |
-| otherwise, one is already being driven | stay there; a caller mid-task means the window they have been working in |
-| otherwise | take a visible one, and report `window_ambiguous` naming the others |
-
-The warning fires once, on the uncertain first pick, and stays quiet afterwards
-because the second rule has taken over. Clicking the window you want is the
-recovery: focus then decides it, and the choice sticks.
-
-Every target is probed on every call. The earlier version cached the decision to
-save websocket handshakes, which is what let a stale choice survive a window
-switch — the handshakes are local and cost less than the read they precede.
-
-**A document between pages reads as an empty one.** `activate` returns when the
-click is delivered, so the next call can land while `document.body` is still
-null: measured here, a click through to iana.org observed as `count: 0` and
-helpfully advised falling back to OCR on an ordinary HTML page. Both backends
-now wait and look again rather than believe the first thin result — it is the
-same hazard as Safari's lazily-built tree, and it gets the same answer.
-
-**Accessibility permission is required for the AX backend**, granted to the
-application that launches the server — the terminal or MCP client, not the
-browser — in System Settings → Privacy & Security → Accessibility. The symptom
-when it is missing is `kAXErrorAPIDisabled` (-25211) on every read.
-
-Either backend is enough to advertise the tools: a Mac with no grant but a
-Chrome on the debug port still gets browser control, and a Mac with the grant
-and no port still drives Safari. Only when neither can serve are the tools
-absent, with the reason logged at startup.
-
-**The web tree is built lazily.** The first read after attaching returned 26
-nodes — Safari's own toolbar and nothing else — where a moment later the same
-window held 397 including 143 links. A thin result with no `AXWebArea` is
-therefore retried once rather than reported as an empty page.
-(`AXManualAccessibility` is unsupported on Safari and not required there — and
-no longer settable on Chrome either, which is why Chrome has its own backend.)
-
-### Element ids expire, exactly like frame ids
-
-A page re-renders constantly, so a handle from before a click may now point at
-something else. Same lesson as the frame store, same shape of fix: the session
-keeps a `page_epoch`, every action bumps it, and acting on an id from an older
-observation is refused with `{"error":"stale_element", …}` and a recovery hint.
-Selenium calls this `StaleElementReferenceException`.
+The first read after attaching returned 26 nodes — Safari's own toolbar and
+nothing else — where a moment later the same window held 397 including 143
+links. A thin result with no `AXWebArea` is therefore retried once rather than
+reported as an empty page. (`AXManualAccessibility` is unsupported on Safari and
+not required there.)
 
 ### The element list is the whole page
 
 Scrolling does not change what `browser_observe` returns — measured, 78 elements
 at the top of a page and the same 78 at the bottom. Accessibility publishes the
-whole document, so **a long page needs no scrolling to read**.
+whole document, so **a long page needs no scrolling to read**, which is the
+reason losing `browser_scroll` costs a reader nothing.
 
-`browser_scroll` is therefore for two other things: making something visible for
-a pixel fallback, and provoking lazily-loaded content. That second one is real —
-scrolling a GitHub page two viewports took the count from 112 to 122.
+It does cost one thing, and it is worth being honest about it: scrolling used to
+provoke lazily-loaded content, and measured, scrolling a GitHub page two
+viewports took the count from 112 to 122. A page that loads on scroll now needs
+the user to scroll it. Ask them, then observe again.
 
 Element frames are in screen coordinates, so `include_frames` is what tells you
-what is actually in view. It is also how scrolling was verified: 80 of 98 shared
-elements moved up by 1360 points, two viewports' worth.
-
-### Input goes to two different places
-
-This decides which mechanism each action uses:
-
-| | routed by | so |
-|---|---|---|
-| scroll wheel | **position** | works without focus; lands on the page under the cursor |
-| keystrokes | **focus** | needs the browser frontmost |
-
-Hence `browser_scroll` up/down uses wheel events — Page Down would go wherever
-the caret happens to be, and with the cursor in a search field it scrolls
-nothing while looking like it worked. `top`/`bottom` and `back` need keys, so
-they raise the browser first and fail loudly if they cannot.
-
-**Raising it uses `AXFrontmost`, not `NSRunningApplication.activate()`.** macOS
-stops a background process taking focus, so `activate()` returns successfully
-and does nothing: the browser stays behind, keystrokes land in the terminal, and
-`browser_back` silently fails. `AXFrontmost` is permitted to a process that
-already holds Accessibility.
-
-**Back is ⌘[, not ⌘←.** ⌘← was the first guess, on the theory that arrow keys
-avoid keyboard-layout trouble. Safari does not bind it. The keystroke was
-arriving the whole time — ⌘L focused the address bar in the same test — the
-shortcut was simply wrong.
-
-## Recording a demonstration
-
-`browser_observe` answers "what is on the page now". The more valuable question
-is "what did the user just do", and the recorder answers that one. Someone
-working in their own Safari — already signed in, already past the SSO redirect
-and the passkey prompt — is demonstrating a task at no cost to anyone, and the
-result is the raw material a skill is distilled from.
-
-This is what a container-based browser cannot do at all. A throwaway Chromium
-has no cookies, no session and no person in it, so it can neither be shown a
-task nor reach anything behind a login. Here the person and the agent share one
-browser, so the demonstration and the replay happen in the same place.
-
-```
-browser_record_start → the user does the task → browser_events_read(wait_seconds: 120)
-```
-
-### macOS reports the consequences, not the causes
-
-Measured against Safari, and it decided the whole design:
-
-| | |
-|---|---|
-| navigation | `AXLoadComplete`, and `AXURL` on the web area is the real URL |
-| page title | `AXTitleChanged` on the window, twice per load |
-| typing | `AXValueChanged` carries the text as it is typed |
-| moving between fields | `AXFocusedUIElementChanged`, with role and name |
-| **a click** | **nothing at all** — Accessibility has no input event |
-| **a scroll** | **nothing at all** |
-
-So Accessibility alone records what happened *to* the page and misses what the
-person did. A click that navigates shows up only as the navigation; one that
-opens a menu, ticks a box, or does nothing is invisible.
-
-A `CGEventTap` supplies exactly the two that are missing, and
-`AXUIElementCopyElementAtPosition` turns a click at (411, 341) back into
-`link "Learn more"`. **The tap knows the verbs; Accessibility knows the nouns
-and the effects.**
-
-The hit test answers with the *deepest* node, which for a link is its
-`AXStaticText` child — measured, clicking "Learn more" resolved to the label,
-not to the link that actually navigated. So the resolver climbs to the nearest
-actionable ancestor.
-
-### It is deliberately not a keylogger
-
-A session event tap can see every keystroke in every application, and this one
-does not ask for them: it subscribes to mouse-down and scroll-wheel only, which
-is the smallest set covering what Accessibility cannot see. Typed text comes
-from `AXValueChanged` on Safari's focused field instead — already scoped to the
-browser, already naming the field it went into, and worth more to a trajectory
-than a stream of key codes.
-
-Two further limits for the same reason: recording starts on an explicit call and
-stops on another, and the value of a secure text field is never stored, only the
-fact that something was typed into one.
-
-### Focus is what makes the stream readable
-
-Raw Accessibility notifications are nowhere near a trajectory. Measured here:
-pressing ⌘L and typing four characters produced **about eighty**
-`AXValueChanged` in three hundred milliseconds — every suggestion row in the
-address-bar dropdown, every favicon beside one, the headings "Google
-Suggestions" and "Top Hit".
-
-One rule removes almost all of it: **report a value change only for the element
-that currently has keyboard focus.** A suggestion row is not focused; the field
-being typed into is. What survives is debounced per element, so a word typed one
-letter at a time becomes one `input` event carrying the finished text.
-
-Focus changes get the same scepticism. One ⌘L fired three of them for the same
-field, two on the window itself, so only focus landing on something typeable or
-pressable is reported — and the de-duplication key is updated **only for what is
-actually reported**, because letting a filtered-out window event update it let
-the address bar through twice in the same millisecond.
-
-### A gesture ends when something else happens
-
-Coalescing buys quiet at the cost of ordering. A scroll is written down 400ms
-after the wheel stops, so a page load one moment later took sequence 2 while the
-scroll that preceded it took 3 — a trajectory in the wrong order. A click, a
-focus change or a load now force-flushes whatever is in flight, because each of
-them definitively ends it.
-
-A gesture may not coalesce forever, either. Debouncing on quiet alone has a
-hole — someone who keeps scrolling never goes quiet — and measured, six seconds
-of continuous wheel movement produced **no events at all**, the whole gesture
-waiting for a pause that never came. A scroll in flight for more than two
-seconds is written down anyway, so a long scroll is reported in pieces rather
-than as silence. Typing is capped at five, more loosely because each
-notification carries the field's whole value, so a late flush still has the
-complete text.
-
-When a flush empties both buffers at once they are written down **oldest
-first**, by when each gesture began. The buffers are examined in a fixed
-order — scroll, then input — which has nothing to do with which happened first,
-so someone who starts typing and then scrolls before the field settles would
-otherwise have the scroll given the lower sequence number, contradicting these
-events' own timestamps. Measured: typing at +0.34s and a scroll at +0.54s,
-forced out together by a click at +0.80s, come back in that order.
-
-**Stopping flushes what is in flight.** A demonstration that ends within the
-debounce window — 0.7s of the last keystroke, 0.4s of the last wheel movement —
-has its final gesture still sitting in a buffer, and that is precisely the last
-thing the person did. `browser_record_stop` flushes before stopping the run
-loop, on the calling thread, because the recorder thread is about to be told to
-exit and may never run its timer again.
-
-### Who did it
-
-Every event says `user` or `agent`, because a trajectory that cannot tell the
-demonstration from the replay is not a demonstration. Agent actions arrive by
-two routes and need two mechanisms:
-
-- **Synthesized input** — `browser_scroll`, `browser_back` — carries a magic
-  value in `.eventSourceUserData`, and the tap recognises its own reflection
-  exactly.
-- **`AXPress` and value writes** post no event at all. Their only trace is the
-  `AXValueChanged` or `AXLoadComplete` that follows, which looks precisely like
-  a person's, so there is nothing to tag: a short window after the call is
-  attributed to the agent instead.
-
-A coalesced event records the source it **arrived** with, not the one in force
-when it is flushed. Deciding at flush time gets it wrong in both directions: a
-gesture begun during the agent's window is credited to the user once that window
-closes, and one the user began before an agent action is credited to the agent.
-For the same reason a buffer is closed off rather than extended when the author
-changes — the agent scrolling through a page the user was already scrolling is
-two gestures, not one distance attributed to whoever moved last.
-
-### Waiting means waiting until they stop
-
-Returning at the first event is the obvious implementation and the wrong one.
-Measured against a scripted demonstration — navigate, click, scroll, type — it
-answered after the navigation and reported one event, with the other three
-arriving seconds later to nobody. A demonstration is finished when the person
-stops, not when they start, so `wait_seconds` is a *budget* and the call returns
-once the browser has been quiet for `settle_seconds`.
-
-Quiet is measured by the **latest sequence number**, never by how many events
-came back. A page is capped at `limit`, so once it is full its length stops
-changing while events keep arriving — a count-based check reads a busy browser
-as a quiet one and returns in the middle of the demonstration it was meant to
-wait out. Sequence numbers are monotonic and never reused, so they cannot say
-that.
-
-### The recorder owns a thread
-
-Both mechanisms deliver through a `CFRunLoop`, and this server's main thread is
-parked in the stdio loop. So the recorder starts a thread and runs a run loop
-there for as long as recording lasts.
-
-That has a consequence worth knowing: **which application is frontmost cannot
-come from an `NSWorkspace` notification**, because those are delivered on a main
-run loop that is not running. The cached value would have stayed at whatever was
-in front when recording began, and every click would have been discarded as
-belonging to another application. It comes from the system-wide Accessibility
-element instead, which answers from any thread — and is asked on every tapped
-event rather than cached, because the lookup is free (measured at under a
-microsecond; the Accessibility client library caches it) and a cache refreshed
-on a timer leaves a window in which a click made just after switching away still
-looks like the browser's.
-
-**Frontmost is not the same as topmost at a given pixel.** A panel, a Spotlight
-window or any non-activating window can sit over the browser while the browser
-still owns the keyboard, and the terminal beside it is simply not covered by the
-browser's window at all. So a click is hit-tested through the **system-wide**
-element and the owner of whatever answers is checked against the browser.
-Asking the browser's own tree — the obvious thing — answers with whatever the
-browser has underneath that point, which is not what was clicked, leaving the
-frontmost check as the only thing between a click anywhere on screen and a
-recorded browser event. Measured with Safari frontmost for *both* clicks: one
-inside its window recorded as `button "Reply…"`, one 600 points to its left over
-Terminal recorded as nothing.
-
-A hit that resolves to another application is dropped; no answer at all still
-records a click with no name, because the frontmost check has already passed and
-parts of a browser publish nothing.
-
-### Notifications are advisory
-
-The server declares the `logging` capability and pushes each recorded event as
-`notifications/message` while a recording runs, so nothing is sent unbidden.
-Being honest about what that buys: a notification is one-way and **does not wake
-a model**. Clients differ in whether they display, log or drop one, and none
-will interrupt an agent mid-turn. It is for a human watching the client's log,
-and for clients that grow better handling later — `browser_events_read` with
-`wait_seconds` remains the mechanism an agent should rely on.
+what is actually in view — the list itself covers the whole page either way.
 
 ### When to fall back to pixels
 
-A canvas, a chart, a map or a WebGL view publishes no semantics. For those —
-and only those — `macos_capture_window` plus `image_ocr` is the answer. The
-split mirrors the game side: a fast semantic path, a slow visual one.
+A canvas, a chart, a map or a WebGL view publishes no semantics — and so does
+every Chrome tab. For those, `macos_capture_window` plus `image_ocr` is the
+answer. The split mirrors the game side: a fast semantic path, a slow visual
+one. Both are reads; neither touches anything.
 
 ## Android controls
 
@@ -921,9 +675,7 @@ nautilus-mcp/
 ├── swift/Sources/
 │   ├── NautilusMcp/     # executable: args + stdio loop
 │   ├── NautilusKit/     # MCP server + tools
-│   ├── BrowserAX/       # Accessibility backend (Safari, Edge) + shared model
-│   │                    # plus the demonstration recorder (observer + event tap)
-│   ├── BrowserCDP/      # Chrome over the DevTools protocol
+│   ├── BrowserAX/       # Accessibility reader (Safari, Edge) + the element model
 │   ├── ScreenCapture/   # WindowManager, OCR, ObjectDetector, ScreenPerception
 │   ├── FoundationModelsKit/, AgentCore/, TTS/, Util/
 │   └── NautilusBridge(FFI)/
@@ -958,24 +710,22 @@ binary and `codesign -v` calls it valid.
 on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
 at startup.
 
-**No `browser_` tools**: neither backend can serve. For Safari that means
-Accessibility is not granted, and the grant belongs to the application that
-*launches* the server — your terminal, or the MCP client — not to
-`nautilus-mcp` itself and not to the browser. Add that application in System
-Settings → Privacy & Security → Accessibility and restart it. Because the grant
-follows the launcher, switching MCP clients means granting again, while
+**No `browser_observe`**: Accessibility is not granted, and the grant belongs to
+the application that *launches* the server — your terminal, or the MCP client —
+not to `nautilus-mcp` itself and not to the browser. Add that application in
+System Settings → Privacy & Security → Accessibility and restart it. Because the
+grant follows the launcher, switching MCP clients means granting again, while
 reinstalling the server does not.
 
-**`browser_observe` on Chrome returns only the toolbar**: that is the AX
-backend answering because no CDP endpoint was found. Chrome will not expose its
-page through Accessibility at all. Start Chrome with `--remote-debugging-port`
-and its own `--user-data-dir`, then restart the server; the startup log says
-which backends are live.
+**`browser_observe` on Chrome returns only the toolbar**: that is Chrome, not a
+bug. It publishes no page through Accessibility at all, and the DevTools-protocol
+backend that used to cover it went with the control tools. Read the page in
+Safari or Edge, or fall back to `macos_capture_window` plus `image_ocr`.
 
-**No `browser_record_*` tools**: they need Accessibility for both halves — the
-notifications to be delivered and the event tap to be allowed to exist — so
-unlike the control tools there is no CDP fallback. Same grant, same place, and
-it belongs to the application that launches the server.
+**Looking for `browser_activate`, `browser_scroll`, `browser_back`,
+`browser_record_*`**: removed on purpose — see *The browser is read and never
+driven*. This server does not act on a browser. Ask the user to do it (the `say`
+tool is there for exactly that) and observe again afterwards.
 
 **`say` runs but nothing is heard**: the voice does not match the language of
 the text, and AVSpeechSynthesizer is silent rather than approximate in that
@@ -1002,3 +752,10 @@ otherwise only reach stderr.
 The agent (app-server client, backend spawning, goals, skills, conversation
 memory), the Windows C# frontend, speech recognition, and the voice REPL. They
 live in the history of [voice-agent](https://github.com/fpt/voice-agent).
+
+Browser **control** and the demonstration recorder were here and were removed —
+`browser_activate`, `browser_set_value`, `browser_scroll`, `browser_back`,
+`browser_record_*`, `browser_events_*`, the `BrowserCDP` target and the
+`CGEventTap` with them. The reasoning is in *The browser is read and never
+driven*; the code is on the `backup/browser-cdp-and-control` branch if any of
+the measurements behind it are ever needed again.

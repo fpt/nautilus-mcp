@@ -566,6 +566,24 @@ the user to scroll it. Ask them, then observe again.
 
 Element frames are in screen coordinates, so `include_frames` is what tells you
 what is actually in view — the list itself covers the whole page either way.
+Measured on pull request #12 in a 1150x844 Safari window: **435 elements
+spanning y 33-4047, 4.8 viewports, of which 246 — 56% — sit below the fold**,
+the GitHub footer among them, all read without the page moving.
+
+**Getting the whole page is what makes `limit` and `filter` interact badly**,
+and the note now says so. The default limit is 250, that same page holds 435,
+and `filter` is applied *after* the walk — so filtering for `Privacy`, which is
+genuinely on the page at y 3736, came back `count: 0` because the walk stopped
+at 250 long before reaching it. "No match" is not the same claim as "not on the
+page", so a filtered miss over a `truncated` walk says which one it means and
+tells the caller to raise `limit`. Raising it to 600 finds both matches.
+
+Coming back empty has two causes that are not the same failure, and
+`BrowserObserveTool.note` keeps them apart: a walk that found nothing means the
+page published nothing — still loading, canvas-drawn, or Chrome — while a filter
+that excluded everything means the page read perfectly well. The first version
+gave both the same "the page may still be loading" answer, which sent someone
+debugging a browser that had just handed back 435 elements.
 
 ### When to fall back to pixels
 

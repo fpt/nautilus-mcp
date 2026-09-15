@@ -76,8 +76,11 @@ public final class BrowserObserveTool: MCPTool {
             interactiveOnly: arguments.bool("interactive_only", default: false))
 
         let withFrames = arguments.bool("include_frames", default: false)
+        // Filtering happens *after* the walk, so the two ways of ending up with
+        // nothing are different failures and must not share an explanation.
+        let needle = arguments.optionalString("filter").flatMap { $0.isEmpty ? nil : $0 }
         var elements = snapshot.elements
-        if let needle = arguments.optionalString("filter"), !needle.isEmpty {
+        if let needle {
             elements = elements.filter {
                 $0.name.localizedCaseInsensitiveContains(needle)
                     || ($0.value?.localizedCaseInsensitiveContains(needle) ?? false)
@@ -93,16 +96,65 @@ public final class BrowserObserveTool: MCPTool {
             "backend": .string(session.backendName),
         ]
         payload["url"] = snapshot.url.map { JSONValue.string($0) } ?? .null
+        // How many the page actually yielded, when that is not what `count`
+        // says. Without it a filtered reply cannot be told from a blank page.
+        if needle != nil {
+            payload["filtered_from"] = .number(Double(snapshot.elements.count))
+        }
         if snapshot.truncated { payload["truncated"] = .bool(true) }
-        if elements.isEmpty {
-            payload["note"] = .string(
-                "Nothing was found to report. The page may still be loading, or its content may "
-                    + "be drawn rather than described — a canvas or WebGL view publishes no "
-                    + "semantics, and for those macos_capture_window plus image_ocr is the way. "
-                    + "On Chrome this is expected: it does not publish its page through "
-                    + "Accessibility at all.")
+        if let note = Self.note(
+            scanned: snapshot.elements.count, matched: elements.count, filter: needle,
+            truncated: snapshot.truncated)
+        {
+            payload["note"] = .string(note)
         }
         return MCPToolResult(text: try JSONValue.object(payload).serialized())
+    }
+
+    /// Why the reply is empty, when it is — and `nil` when it is not.
+    ///
+    /// There are two ways to come back with nothing and they are different
+    /// failures, so they must not share an explanation. The walk finding no
+    /// elements means the page published none. A filter excluding all of them
+    /// means the page read perfectly and the needle simply did not match;
+    /// telling someone their page may still be loading, when 435 elements came
+    /// back off it, sends them debugging a browser that is working.
+    ///
+    /// `truncated` compounds the second one. Filtering happens after the walk,
+    /// so a walk that stopped at the limit never offered the rest to the
+    /// filter, and "no match" is then not the same claim as "not on the page".
+    /// A long page hits the default easily: measured, a GitHub pull request
+    /// holds 435 elements against a default limit of 250.
+    /// `nonisolated` because it is pure arithmetic over three numbers and a
+    /// string — nothing here touches Accessibility or AppKit, and a test should
+    /// not need the main actor to check which explanation comes back.
+    nonisolated static func note(
+        scanned: Int, matched: Int, filter: String?, truncated: Bool
+    ) -> String? {
+        guard matched == 0 else { return nil }
+
+        if scanned == 0 {
+            return
+                "Nothing was found to report. The page may still be loading, or its content may "
+                + "be drawn rather than described — a canvas or WebGL view publishes no "
+                + "semantics, and for those macos_capture_window plus image_ocr is the way. "
+                + "On Chrome this is expected: it does not publish its page through "
+                + "Accessibility at all."
+        }
+        guard let filter else { return nil }
+
+        let capped =
+            truncated
+            ? " The walk also stopped early — `truncated` is set, so only the first \(scanned) "
+                + "element(s) were searched and a match further down the page would not have "
+                + "been seen. Raise `limit` and try again."
+            : ""
+        return
+            "The page was read fine — \(scanned) element(s) — but none of them matched the "
+            + "filter \(filter.debugDescription). Nothing is wrong with the page or the "
+            + "browser. Matching is a case-insensitive substring of an element's name or value, "
+            + "so a shorter fragment is likelier to hit; observe without `filter` to see what "
+            + "the page actually calls things." + capped
     }
 
     static func describe(_ element: BrowserElement, frames: Bool = false) -> JSONValue {

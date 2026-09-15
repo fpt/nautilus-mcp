@@ -129,20 +129,18 @@ public enum Permissions {
             Status(
                 name: "accessibility",
                 granted: accessibilityGranted,
-                affects: [
-                    "browser_record_start", "browser_record_stop", "browser_events_read",
-                    "browser_events_clear", "browser_observe", "browser_activate",
-                    "browser_set_value", "browser_scroll", "browser_back",
-                ],
+                affects: ["browser_observe"],
                 toolsRemoved: true,
                 whenDenied:
-                    "Every Accessibility read fails with kAXErrorAPIDisabled (-25211), so the "
-                    + "tools are left out of tools/list rather than advertised. The recorder "
-                    + "(browser_record_*, browser_events_*) goes unconditionally: it needs "
-                    + "Accessibility for both halves, the notifications and the event tap, and "
-                    + "has no other backend. The control tools go only if Chrome is also not "
-                    + "listening on a DevTools port — with one live they stay, served by CDP, "
-                    + "and drive Chrome alone. The startup notes below say which happened.",
+                    "Every Accessibility read fails with kAXErrorAPIDisabled (-25211), so "
+                    + "browser_observe is left out of tools/list rather than advertised. It is "
+                    + "the only browser tool there is, and it only reads — this server does not "
+                    + "click, type in or navigate a browser, so there is nothing here a grant "
+                    + "would let it do to your window. Accessibility is seen live: grant it and "
+                    + "restart the server, no logout needed. Note that Chrome publishes no page "
+                    + "through Accessibility even when granted, so its tabs read as toolbar "
+                    + "only; Safari and Edge answer properly. The startup notes below say what "
+                    + "this run found.",
                 settingsURL: accessibilitySettingsURL),
             Status(
                 name: "screen_recording",

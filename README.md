@@ -41,11 +41,15 @@ MCP client (Claude Code, …)
 | `visual_list` | what has been learned |
 | `android_read_text` | capture and read the screen's text in one call |
 | `android_look_for` | capture and locate a learned element in one call |
-| `browser_observe` | the page in Safari/Chrome as roles, names and ids |
-| `browser_activate` | press a button or follow a link by id |
-| `browser_set_value` | type into a field by id |
-| `browser_scroll` | scroll the page down, up, to top or bottom |
-| `browser_back` | go back in history |
+| `browser_observe` | read the page in Safari as roles, names and ids |
+
+**The browser is read, never driven.** `browser_observe` is the only browser
+tool, and it has no counterpart that clicks, types, scrolls or navigates. The
+window it reads is the user's own — their logins, their attention, their screen —
+so a synthesized click would land on a link nobody chose, and could not be taken
+back. Reading costs them nothing. Anything that has to act on a browser belongs
+above this server, where a person can see it coming. Safari and Edge answer;
+Chrome publishes no page through Accessibility and reads as toolbar only.
 
 **The tool list describes this machine.** A Mac without Apple Intelligence does
 not advertise `ask_local_model`; with no device attached the `android_` tools are

@@ -97,16 +97,19 @@ final class PermissionsTests: XCTestCase {
         XCTAssertTrue(summary.contains("screen_recording"), summary)
     }
 
-    /// The affected lists have to match what main.swift actually builds. These
-    /// are the real ones, and the recorder tools are the strictly
-    /// Accessibility-only set — the browser control tools survive on CDP.
+    /// The affected lists have to match what main.swift actually builds. There
+    /// is one browser tool now and it is read-only, so Accessibility gates
+    /// exactly `browser_observe` — and gates it by removal, where the Screen
+    /// Recording tools stay listed and fail on the way to SCShareableContent.
     func testTheRealStatusesNameTheToolsTheyAffect() {
         let statuses = Permissions.all()
         let accessibility = statuses.first { $0.name == "accessibility" }
         let screen = statuses.first { $0.name == "screen_recording" }
         XCTAssertEqual(accessibility?.toolsRemoved, true)
         XCTAssertEqual(screen?.toolsRemoved, false, "the macos_ tools are built unconditionally")
-        XCTAssertTrue(accessibility?.affects.contains("browser_record_start") ?? false)
+        XCTAssertEqual(
+            accessibility?.affects, ["browser_observe"],
+            "the control tools and the recorder are gone; observing is all Accessibility gates")
         XCTAssertTrue(screen?.affects.contains("macos_capture_window") ?? false)
         XCTAssertTrue(
             screen?.affects.contains("macos_list_windows") ?? false,

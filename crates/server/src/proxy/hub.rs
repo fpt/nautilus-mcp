@@ -556,6 +556,11 @@ impl Hub {
     }
 
     /// Look again at what the machine offers and rebuild the core tools.
+    ///
+    /// No notification is sent from here, and none needs to be: the main loop
+    /// compares the whole tool list after *every* event — this call included —
+    /// and sends `tools/list_changed` when it differs. That one place covers
+    /// rebuilds, config reloads and this alike, and sends it once.
     fn refresh_core(&mut self) -> Value {
         match &mut self.core {
             Core::Local {

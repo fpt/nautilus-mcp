@@ -544,25 +544,25 @@ pub fn is_url(s: &str) -> bool {
     s.starts_with("http://") || s.starts_with("https://")
 }
 
-/// An explicit choice wins; otherwise a path ending in `/sse` means SSE.
+/// An explicit choice wins; otherwise a path ending in `/sse` means SSE. The
+/// URL is checked either way — an explicit transport is no reason to accept
+/// `ftp://` into the config and fail at the first connect.
 pub fn resolve_transport(server_url: &str, choice: &str) -> Result<&'static str, String> {
+    let u =
+        url::Url::parse(server_url).map_err(|e| format!("parse server URL {server_url:?}: {e}"))?;
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+        return Err(format!(
+            "server URL {server_url:?} must be an absolute http(s) URL"
+        ));
+    }
     match choice {
         "http" => Ok("http"),
         "sse" => Ok("sse"),
-        "" => {
-            let u = url::Url::parse(server_url)
-                .map_err(|e| format!("parse server URL {server_url:?}: {e}"))?;
-            if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
-                return Err(format!(
-                    "server URL {server_url:?} must be an absolute http(s) URL"
-                ));
-            }
-            Ok(if u.path().trim_end_matches('/').ends_with("/sse") {
-                "sse"
-            } else {
-                "http"
-            })
-        }
+        "" => Ok(if u.path().trim_end_matches('/').ends_with("/sse") {
+            "sse"
+        } else {
+            "http"
+        }),
         other => Err(format!(
             "unknown transport {other:?} (want \"http\" or \"sse\")"
         )),
@@ -638,6 +638,11 @@ mod tests {
         assert_eq!(resolve_transport("https://x/mcp", "").unwrap(), "http");
         assert_eq!(resolve_transport("https://x/mcp", "sse").unwrap(), "sse");
         assert!(resolve_transport("ftp://x", "").is_err());
+        assert!(
+            resolve_transport("ftp://x", "sse").is_err(),
+            "explicit transport still validates"
+        );
+        assert!(resolve_transport("not a url", "http").is_err());
         assert!(resolve_transport("https://x", "ws").is_err());
     }
 

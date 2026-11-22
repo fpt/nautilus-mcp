@@ -11,5 +11,6 @@ pub mod conn;
 pub mod http;
 pub mod hub;
 pub mod search;
+pub mod stream;
 pub mod upstream;
 pub mod wrapper;

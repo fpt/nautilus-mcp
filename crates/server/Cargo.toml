@@ -26,5 +26,9 @@ jsonschema = { version = "0.62", default-features = false }
 # links nothing new.
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"
+# The legacy-SSE GET runs on its own socket so it can be shut down; same
+# rustls and features ureq already builds with, so nothing new is linked.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
 sha2 = "0.10"
 getrandom = "0.2"

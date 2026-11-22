@@ -309,7 +309,10 @@ while `godev__old` (server exists, tool gone) is a tool error listing what
 
 Streamable HTTP (one POST per message, session id echoed back, answers as JSON or
 an SSE stream) and legacy SSE (a standing GET whose first event names the POST
-URL). Header values expand `${NAME}` at connect time, so secrets stay in the
+URL). That GET is the one request not made through ureq: ureq never
+hands out the socket under a response, so a quiet stream could only be ended
+by the server, and every reconnect leaked a stream and its reader thread.
+`proxy/stream.rs` owns the socket and shuts it down on close or drop. Header values expand `${NAME}` at connect time, so secrets stay in the
 environment.
 
 `nautilus-mcp auth <name>`: probe without credentials → protected resource
@@ -360,6 +363,9 @@ No device on the Linux dev box, so against fixtures:
   401 hint, `auth`, refresh of an expired token, streamable HTTP with an SSE
   answer, legacy SSE, `logout`;
 - the Swift core role, played by the stdio fixture via `--core`;
+- legacy SSE reconnects: five `nautilus_restart`s left 6 open streams and 9
+  threads before the GET moved onto its own socket (`proxy/stream.rs`), and 1
+  and 4 after; TLS on that path checked against a public host;
 - `nautilus_refresh` against the real Retroid Pocket 3+, behind an `adb` wrapper
   that hides it until "plugged in": tools added, `list_changed` sent once,
   `android_info` and `android_read_text` answered, tools removed on "unplug".

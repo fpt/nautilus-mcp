@@ -257,6 +257,8 @@ type Pending = Arc<Mutex<HashMap<u64, Sender<Result<Value, ConnError>>>>>;
 
 struct SseConn {
     agent: ureq::Agent,
+    /// Owns the GET's socket: closing it is what ends the reader thread.
+    shutter: super::stream::Shutter,
     endpoint: String,
     headers: Vec<(String, String)>,
     bearer: Option<Bearer>,
@@ -268,16 +270,15 @@ struct SseConn {
 
 impl SseConn {
     fn connect(spec: RemoteSpec, agent: ureq::Agent) -> Result<Self, ConnError> {
-        let mut req = agent.get(&spec.url).set("Accept", "text/event-stream");
-        for (k, v) in &spec.headers {
-            req = req.set(k, v);
-        }
+        let mut headers = spec.headers.clone();
         if let Some(b) = &spec.bearer {
             if let Some(h) = b.header(&agent, false)? {
-                req = req.set("Authorization", &h);
+                headers.push(("Authorization".into(), h));
             }
         }
-        let resp = req.call().map_err(|e| http_error(&spec.url, e))?;
+        // Not through ureq: it never hands out the socket, so a quiet stream
+        // could only be ended by the server, and every reconnect leaked one.
+        let stream = super::stream::open(&spec.url, &headers)?;
         let base = url::Url::parse(&spec.url).map_err(|e| ConnError::Closed(e.to_string()))?;
 
         let pending: Pending = Arc::default();
@@ -289,7 +290,7 @@ impl SseConn {
             let events = spec.events;
             std::thread::spawn(move || {
                 let mut endpoint_tx = Some(endpoint_tx);
-                read_sse(resp.into_reader(), |event, data| {
+                read_sse(stream.body, |event, data| {
                     if event == "endpoint" {
                         if let (Some(tx), Ok(u)) = (endpoint_tx.take(), base.join(data.trim())) {
                             let _ = tx.send(u.to_string());
@@ -315,11 +316,13 @@ impl SseConn {
                 pending.lock().unwrap().clear();
             });
         }
+        let shutter = stream.shutter;
         let endpoint = endpoint_rx
             .recv_timeout(Duration::from_secs(15))
             .map_err(|_| ConnError::Closed(format!("{} sent no endpoint event", spec.url)))?;
         Ok(Self {
             agent,
+            shutter,
             endpoint,
             headers: spec.headers,
             bearer: spec.bearer,
@@ -394,9 +397,10 @@ impl Connection for SseConn {
     }
 
     fn close(self: Box<Self>) {
-        // The reader thread ends when the server closes the stream; dropping
-        // the agent's response is not possible from here, so mark it closed.
         self.closed.store(true, Ordering::SeqCst);
+        // Wakes the reader blocked on the stream; it sees EOF and ends. (Also
+        // done on drop, so a connection lost any other way cannot leak.)
+        self.shutter.close();
     }
 }
 

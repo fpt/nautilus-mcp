@@ -229,7 +229,7 @@ mod tests {
             },
             Store::new(std::env::temp_dir()),
             "/nonexistent/config.toml".into(),
-            Core::Local(vec![Box::new(Echo)]),
+            Core::fixed(vec![Box::new(Echo)]),
             vec![],
         )
     }
@@ -276,6 +276,7 @@ mod tests {
             vec![
                 "echo",
                 "nautilus_status",
+                "nautilus_refresh",
                 "nautilus_restart",
                 "nautilus_search_tools",
                 "nautilus_call_tool"

@@ -135,6 +135,7 @@ tool set that does not need macOS in-process:
 | `image_crop`, `image_diff` | on frames from `android_observe`, with the same stale-frame refusal |
 | `image_ocr` | through the `tesseract` CLI, if installed (`apt install tesseract-ocr tesseract-ocr-jpn`) |
 | `nautilus_status` | always present: what is here, and why anything is missing |
+| `nautilus_refresh` | look again after plugging in a device (or installing tesseract) — no session restart |
 | proxying, wrappers | everything in the next section |
 
 Screen capture, `image_regions`, `visual_*`, `browser_observe`, `say` and

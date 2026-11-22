@@ -26,7 +26,7 @@ MCP client ──stdio──> nautilus-mcp (Rust hub, crates/server)
                         │                            └─ macOS: nautilus-mcp-macos ↓ (stdio, supervised)
                         │  [servers.*] → <name>__<tool>   stdio, streamable HTTP, SSE (+ OAuth)
                         │  [wrapper.*] → <name>           one fixed shell command each
-                        └  nautilus_status / _restart / _search_tools / _call_tool
+                        └  nautilus_status / _refresh / _restart / _search_tools / _call_tool
 
 nautilus-mcp-macos ──stdio, line-delimited JSON-RPC 2.0──>  NautilusMcp (main.swift)
                                                           │
@@ -242,6 +242,20 @@ project's MCP configuration cannot widen it.
 | Linux | in-process: `android_*`, `image_crop`, `image_diff`, `image_ocr` (if tesseract runs) |
 | macOS | `nautilus-mcp-macos`, found next to the hub (or `--core <path>`), supervised |
 
+**The device is detected at startup, and again on `nautilus_refresh`.** Plugging
+one in mid-session used to mean restarting the client's session. The refresh
+rebuilds the in-process tools from what the machine offers now — a device
+attached or removed, tesseract installed — reports what was added and removed,
+and the client is sent `tools/list_changed`. The frame store is kept across the
+rebuild with its epoch bumped, so ids never repeat and a frame from before is
+refused as stale rather than read against a different device. On macOS the
+refresh restarts the Swift core, which binds its device at startup.
+
+It is a tool rather than a poll because `adb devices` once a second, forever,
+to catch an event that happens a few times a session is the wrong trade — and
+because a tool that vanishes when a cable wiggles would be worse than one the
+caller asks for.
+
 `--core off` forces the in-process tools. The hub forwards `--android`,
 `--config` (when given), `--voice` and `--prototypes` to a Swift core. A Swift
 core owns Android and the frame store, so the in-process tools are not started
@@ -257,7 +271,7 @@ The name starts with the reserved prefix, so no configured server can take it.
 | core | `android_tap`, `macos_capture_window` |
 | proxied | `godev__search_godoc` |
 | wrapper | `test` |
-| built-in | `nautilus_status`, `nautilus_restart`, `nautilus_search_tools`, `nautilus_call_tool` |
+| built-in | `nautilus_status`, `nautilus_refresh`, `nautilus_restart`, `nautilus_search_tools`, `nautilus_call_tool` |
 
 Server and wrapper names: up to 32 of `[A-Za-z0-9_-]`, no `__`, not starting
 with `nautilus`. A wrapper whose name a core tool already has is **not listed** —
@@ -345,10 +359,12 @@ No device on the Linux dev box, so against fixtures:
 - an OAuth-protected HTTP fixture that checks PKCE and the resource indicator:
   401 hint, `auth`, refresh of an expired token, streamable HTTP with an SSE
   answer, legacy SSE, `logout`;
-- the Swift core role, played by the stdio fixture via `--core`.
+- the Swift core role, played by the stdio fixture via `--core`;
+- `nautilus_refresh` against the real Retroid Pocket 3+, behind an `adb` wrapper
+  that hides it until "plugged in": tools added, `list_changed` sent once,
+  `android_info` and `android_read_text` answered, tools removed on "unplug".
 
-Not verified: the real Swift server as the core on macOS, or a real Android
-device through the hub.
+Not verified: the real Swift server as the core on macOS.
 
 ## Configuration
 
@@ -905,8 +921,9 @@ binary and `codesign -v` calls it valid.
 **UniFFI checksum mismatch**: regenerate; the script copies for you.
 
 **No `android_` tools**: check `adb devices`. An `unauthorized` device needs the
-on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
-at startup.
+on-screen "Allow USB debugging" prompt accepted. Plugged in after the server
+started? Call `nautilus_refresh` — no session restart needed. The reason is in
+`nautilus_status`.
 
 **No `browser_observe`**: Accessibility is not granted, and the grant belongs to
 the application that *launches* the server — your terminal, or the MCP client —

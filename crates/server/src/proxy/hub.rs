@@ -28,6 +28,7 @@ pub const STATUS: &str = "nautilus_status";
 pub const RESTART: &str = "nautilus_restart";
 pub const SEARCH: &str = "nautilus_search_tools";
 pub const CALL: &str = "nautilus_call_tool";
+pub const REFRESH: &str = "nautilus_refresh";
 /// The supervised Swift server's name in status and `nautilus_restart`. It
 /// starts with the reserved prefix, so no configured server can take it.
 pub const CORE_NAME: &str = "nautilus-macos";
@@ -47,7 +48,7 @@ const MACOS_ONLY: [(&str, &str); 8] = [
     ),
     (
         "android_tap_region",
-        "needs image_regions ids; android_tap takes the same point",
+        "image_regions ids; android_tap takes the same point",
     ),
     ("browser_observe", "macOS Accessibility"),
     ("say", "AVSpeechSynthesizer"),
@@ -55,11 +56,42 @@ const MACOS_ONLY: [(&str, &str); 8] = [
     ("macos_permissions", "TCC grants"),
 ];
 
+/// Builds the in-process tools from what the machine offers right now, with a
+/// note for each thing found or missing.
+pub type Builder = Box<dyn Fn() -> (Vec<Box<dyn Tool>>, Vec<String>)>;
+
 pub enum Core {
-    /// The portable tools, in-process.
-    Local(Vec<Box<dyn Tool>>),
+    /// The portable tools, in-process. `rebuild` is how `nautilus_refresh`
+    /// notices a device plugged in after startup.
+    Local {
+        tools: Vec<Box<dyn Tool>>,
+        notes: Vec<String>,
+        rebuild: Option<Builder>,
+    },
     /// The Swift server, as an upstream whose tools are not prefixed.
     Remote(Box<Upstream>),
+}
+
+impl Core {
+    /// Build now, and keep the builder for later refreshes.
+    pub fn local(build: Builder) -> Self {
+        let (tools, notes) = build();
+        Core::Local {
+            tools,
+            notes,
+            rebuild: Some(build),
+        }
+    }
+
+    /// A fixed set, for tests.
+    #[cfg(test)]
+    pub fn fixed(tools: Vec<Box<dyn Tool>>) -> Self {
+        Core::Local {
+            tools,
+            notes: vec![],
+            rebuild: None,
+        }
+    }
 }
 
 struct Backend {
@@ -261,7 +293,7 @@ impl Hub {
 
     fn core_tools(&self) -> Vec<Value> {
         match &self.core {
-            Core::Local(tools) => tools
+            Core::Local { tools, .. } => tools
                 .iter()
                 .map(|t| json!({ "name": t.name(), "description": t.description(), "inputSchema": t.input_schema() }))
                 .collect(),
@@ -307,6 +339,7 @@ impl Hub {
     pub fn call(&mut self, name: &str, args: &Args) -> Result<Value, UnknownTool> {
         match name {
             STATUS => return Ok(text_result(self.status_text())),
+            REFRESH => return Ok(self.refresh_core()),
             RESTART => return Ok(self.restart_tool(args)),
             SEARCH => return Ok(self.search_tool(args)),
             CALL => {
@@ -347,7 +380,7 @@ impl Hub {
         }
 
         match &mut self.core {
-            Core::Local(tools) => {
+            Core::Local { tools, .. } => {
                 if let Some(t) = tools.iter().find(|t| t.name() == name) {
                     return Ok(match t.call(args) {
                         Ok(out) => output_value(out),
@@ -396,6 +429,16 @@ impl Hub {
                 "inputSchema": { "type": "object", "properties": {} },
                 "annotations": { "readOnlyHint": true, "destructiveHint": false,
                                  "idempotentHint": true, "openWorldHint": false },
+            }),
+            json!({
+                "name": REFRESH,
+                "description": format!("Look again at what this machine offers and update the tool \
+                    list: an Android device plugged in (or unplugged) since nautilus-mcp started, \
+                    tesseract installed since. The device is otherwise only detected at startup. \
+                    On macOS this restarts the core server. Frames captured before become stale. \
+                    Reports which tools were added or removed; {STATUS} explains anything still missing."),
+                "inputSchema": { "type": "object", "properties": {} },
+                "annotations": { "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
             }),
             json!({
                 "name": RESTART,
@@ -451,9 +494,15 @@ impl Hub {
             std::env::consts::ARCH
         ));
         match &self.core {
-            Core::Local(tools) => {
+            Core::Local { tools, notes, .. } => {
                 let names: Vec<String> = tools.iter().map(|t| t.name()).collect();
                 s.push_str(&format!("[core] in-process\ntools: {}\n", names.join(", ")));
+                for n in notes {
+                    s.push_str(&format!("  {n}\n"));
+                }
+                s.push_str(&format!(
+                    "  (plugged a device in, or installed tesseract, since? call {REFRESH})\n"
+                ));
                 s.push_str("not in this build (macOS only):\n");
                 for (t, why) in MACOS_ONLY {
                     s.push_str(&format!("  {t} — needs {why}\n"));
@@ -504,6 +553,57 @@ impl Hub {
             s.push('\n');
         }
         s
+    }
+
+    /// Look again at what the machine offers and rebuild the core tools.
+    fn refresh_core(&mut self) -> Value {
+        match &mut self.core {
+            Core::Local {
+                tools,
+                notes,
+                rebuild: Some(build),
+            } => {
+                let before: Vec<String> = tools.iter().map(|t| t.name()).collect();
+                let (fresh, fresh_notes) = build();
+                let after: Vec<String> = fresh.iter().map(|t| t.name()).collect();
+                *tools = fresh;
+                *notes = fresh_notes;
+
+                let added: Vec<&String> = after.iter().filter(|n| !before.contains(n)).collect();
+                let removed: Vec<&String> = before.iter().filter(|n| !after.contains(n)).collect();
+                let mut s = String::new();
+                match (added.is_empty(), removed.is_empty()) {
+                    (true, true) => s.push_str("No change in the core tools.\n"),
+                    _ => {
+                        if !added.is_empty() {
+                            s.push_str(&format!("added: {}\n", join(&added)));
+                        }
+                        if !removed.is_empty() {
+                            s.push_str(&format!("removed: {}\n", join(&removed)));
+                        }
+                    }
+                }
+                for n in notes.iter() {
+                    s.push_str(&format!("{n}\n"));
+                }
+                s.push_str(
+                    "Frames captured before this refresh are stale; observe again before reading one.\n",
+                );
+                text_result(s)
+            }
+            Core::Local { rebuild: None, .. } => text_result("This core has nothing to refresh."),
+            Core::Remote(up) => {
+                // The Swift server binds its device at startup, so looking
+                // again means starting it again.
+                let ok = up.restart(true).is_ok();
+                let text = format!("Restarted the core.\n{}", format_upstream(CORE_NAME, up));
+                if ok {
+                    text_result(text)
+                } else {
+                    error_result(text)
+                }
+            }
+        }
     }
 
     fn restart_tool(&mut self, args: &Args) -> Value {
@@ -618,6 +718,14 @@ impl Hub {
         ));
         text_result(s)
     }
+}
+
+fn join(names: &[&String]) -> String {
+    names
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn list_or_none(names: &[String]) -> String {
@@ -747,7 +855,7 @@ mod tests {
             },
             Store::new(std::env::temp_dir()),
             PathBuf::from("/nonexistent/config.toml"),
-            Core::Local(vec![Box::new(Fake)]),
+            Core::fixed(vec![Box::new(Fake)]),
             vec![],
         );
         let mut cfg = Config::default();
@@ -796,6 +904,82 @@ mod tests {
         assert_eq!(r["isError"], true);
         args.insert("name".into(), STATUS.into());
         assert_eq!(hub.call(CALL, &args).ok().unwrap()["isError"], true);
+    }
+
+    #[test]
+    fn refresh_picks_up_a_device_plugged_in_later() {
+        struct Named(&'static str);
+        impl Tool for Named {
+            fn name(&self) -> String {
+                self.0.into()
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn call(&self, _: &Args) -> Result<ToolOutput, crate::mcp::ToolFailure> {
+                Ok(ToolOutput::text("ok"))
+            }
+        }
+        let plugged = std::rc::Rc::new(std::cell::Cell::new(false));
+        let p = plugged.clone();
+        let core = Core::local(Box::new(move || {
+            let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(Named("image_crop"))];
+            if p.get() {
+                tools.push(Box::new(Named("android_tap")));
+                (tools, vec!["bound Android device".into()])
+            } else {
+                (tools, vec!["no Android tools: no device attached".into()])
+            }
+        }));
+        let mut hub = Hub::new(
+            Options {
+                settle: Duration::ZERO,
+                start_timeout: Duration::from_secs(5),
+                pass_stderr: false,
+                events: None,
+            },
+            Store::new(std::env::temp_dir()),
+            PathBuf::from("/nonexistent/config.toml"),
+            core,
+            vec![],
+        );
+        let names = |h: &Hub| -> Vec<String> {
+            h.list()
+                .iter()
+                .filter_map(tool_name)
+                .map(String::from)
+                .collect()
+        };
+        assert!(!names(&hub).contains(&"android_tap".to_string()));
+        assert!(hub.status_text().contains("no device attached"));
+
+        plugged.set(true);
+        let r = hub.call(REFRESH, &Args::new()).ok().unwrap();
+        let text = r["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("added: android_tap"), "{text}");
+        assert!(names(&hub).contains(&"android_tap".to_string()));
+        assert!(hub.status_text().contains("bound Android device"));
+        assert_eq!(
+            hub.call("android_tap", &Args::new()).ok().unwrap()["isError"],
+            false
+        );
+
+        plugged.set(false);
+        let r = hub.call(REFRESH, &Args::new()).ok().unwrap();
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("removed: android_tap"));
+        assert!(hub.call("android_tap", &Args::new()).is_err());
+
+        let r = hub.call(REFRESH, &Args::new()).ok().unwrap();
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("No change"));
     }
 
     #[test]

@@ -263,7 +263,13 @@ fn serve(args: &[String]) -> i32 {
                 opts.clone(),
             )))
         }
-        None => Core::Local(local_tools(a.android.as_deref(), &mut note)),
+        None => {
+            // One frame store for the life of the process, so ids never repeat
+            // across a refresh.
+            let frames: Frames = Rc::new(RefCell::new(frames::FrameStore::default()));
+            let android = a.android.clone();
+            Core::local(Box::new(move || local_tools(android.as_deref(), &frames)))
+        }
     };
 
     let creds = Store::new(config::credentials_dir(&config_path));
@@ -360,9 +366,18 @@ fn serve(args: &[String]) -> i32 {
     0
 }
 
-/// The in-process portable tools.
-fn local_tools(android: Option<&str>, note: &mut dyn FnMut(String)) -> Vec<Box<dyn Tool>> {
-    let frames: Frames = Rc::new(RefCell::new(frames::FrameStore::default()));
+/// The in-process portable tools, from what the machine offers right now.
+/// Called at startup and again by `nautilus_refresh`.
+fn local_tools(android: Option<&str>, frames: &Frames) -> (Vec<Box<dyn Tool>>, Vec<String>) {
+    // Whatever was captured before describes a world that may have changed —
+    // a different device, even. Mark it stale rather than forget it.
+    frames.borrow_mut().world_changed();
+
+    let mut notes = Vec::new();
+    let mut note = |text: String| {
+        log(&text);
+        notes.push(text);
+    };
     let mut tools: Vec<Box<dyn Tool>> = vec![
         Box::new(ImageCropTool {
             frames: frames.clone(),
@@ -395,7 +410,7 @@ fn local_tools(android: Option<&str>, note: &mut dyn FnMut(String)) -> Vec<Box<d
         None | Some("off") => note("Android tools disabled (--android off)".into()),
         Some(spec) => {
             let serial = (spec != "auto").then(|| spec.to_string());
-            match tools::android_tools(serial, &frames, ocr) {
+            match tools::android_tools(serial, frames, ocr) {
                 Ok(list) => {
                     note(format!("bound Android device, {} tool(s)", list.len()));
                     tools.extend(list);
@@ -404,5 +419,5 @@ fn local_tools(android: Option<&str>, note: &mut dyn FnMut(String)) -> Vec<Box<d
             }
         }
     }
-    tools
+    (tools, notes)
 }

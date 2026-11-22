@@ -4,20 +4,31 @@
 
 A **headless MCP server**. It exposes macOS perception (screen capture, OCR,
 object detection, speech, the on-device model) and Android device control (over
-`adb`) to any MCP client, over stdio.
+`adb`) to any MCP client, over stdio — and it is the **one server a client
+registers**: other MCP servers sit behind it, as `<server>__<tool>`, restarted
+when they are rebuilt (the go-mcpproxy functionality, merged in).
 
 It runs **no inference of its own** beyond Apple's on-device model, and drives no
 agent. The client decides what to do; nautilus-mcp only says what the machine can
 do and does it.
 
-- **Platform**: macOS 26+
+- **Platform**: macOS 26+ for the Swift perception tools; Linux (or anywhere)
+  for the hub and the portable tools — see **The hub**
 - **Swift**: swift-tools-version 6.1, `.swiftLanguageMode(.v5)` on all targets
-- **Rust**: workspace in `crates/`, one member — the `nautilus_core` cdylib
+- **Rust**: workspace in `crates/`, two members — the `nautilus_core` cdylib, and
+  `crates/server`, the `nautilus-mcp` hub binary
 
 ## Architecture
 
 ```
-MCP client  ──stdio, line-delimited JSON-RPC 2.0──>  NautilusMcp (main.swift)
+MCP client ──stdio──> nautilus-mcp (Rust hub, crates/server)
+                        │  core, unprefixed ─────────┬─ Linux: in-process portable tools
+                        │                            └─ macOS: nautilus-mcp-macos ↓ (stdio, supervised)
+                        │  [servers.*] → <name>__<tool>   stdio, streamable HTTP, SSE (+ OAuth)
+                        │  [wrapper.*] → <name>           one fixed shell command each
+                        └  nautilus_status / _refresh / _restart / _search_tools / _call_tool
+
+nautilus-mcp-macos ──stdio, line-delimited JSON-RPC 2.0──>  NautilusMcp (main.swift)
                                                           │
                                                      NautilusKit
                                           ┌───────────────┼───────────────┐
@@ -30,9 +41,16 @@ MCP client  ──stdio, line-delimited JSON-RPC 2.0──>  NautilusMcp (main.s
                                                                          adb → device
 ```
 
-**Swift owns the main loop.** `WindowManager` is `@MainActor` (ScreenCaptureKit
-and AppKit need it), so the server loop runs there and stdin is read off-thread.
-Rust contributes the Android controls and nothing else.
+**The hub owns the client.** On macOS the Swift server is still a complete MCP
+server — `swift/.build/release/nautilus-mcp` works on its own — but `make
+install` puts it beside the hub as `nautilus-mcp-macos`, and the hub runs it as
+its *core*: tools unprefixed, so a model sees exactly the names it always did,
+and restarted when it is rebuilt like any other upstream.
+
+**Inside the Swift server, Swift owns the main loop.** `WindowManager` is
+`@MainActor` (ScreenCaptureKit and AppKit need it), so the server loop runs
+there and stdin is read off-thread. Rust contributes the Android controls
+through UniFFI and nothing else.
 
 > This is the reverse of voice-agent, where Rust owned the tool registry and
 > proxied each macOS tool back to Swift over a polled channel bridge. Inverting
@@ -176,6 +194,183 @@ wrong by accident.
 MCP permits pipelining. Every tool here ultimately touches a single shared
 resource — one screen, one device, one speaker — so serializing is the honest
 behaviour, not a limitation to work around.
+
+## The hub (`crates/server`)
+
+`nautilus-mcp` is a Rust binary in front of everything. It began as the Linux
+build — Swift on Linux has Foundation and none of the frameworks this server
+perceives with — and then absorbed **go-mcpproxy**, so a client registers one
+server and reaches the device, the Mac, the servers being developed, and the
+project's own commands through it.
+
+| module | |
+|---|---|
+| `main.rs` | `serve` (the default) and the event loop; picks the core |
+| `cli.rs` | `add`, `wrap`, `rm`, `ls`, `tools`, `call`, `auth`, `logout` |
+| `mcp.rs` | the protocol: negotiation, the error split, `tools/list_changed` |
+| `frames.rs`, `tools.rs` | the in-process core: Android, frames, crop/diff, OCR via tesseract |
+| `proxy/hub.rs` | everything `tools/list` shows and `tools/call` reaches; the built-ins |
+| `proxy/upstream.rs` | one supervised upstream: rebuild detection, restart, validation |
+| `proxy/conn.rs`, `proxy/http.rs` | stdio, streamable HTTP and SSE transports |
+| `proxy/auth.rs` | credentials and the OAuth flow |
+| `proxy/config.rs` | `[servers.*]` / `[wrapper.*]`, loading and comment-preserving edits |
+| `proxy/search.rs`, `proxy/wrapper.rs` | tool search; wrapper tools |
+
+### One config, and it is nautilus's
+
+`[servers.*]` and `[wrapper.*]` live in **the same file as `[tts]`** —
+`--config`, else `$NAUTILUS_CONFIG`, else `~/.config/nautilus/config.toml`.
+go-mcpproxy's own file and `$MCPPROXY_CONFIG` are **not read**; that config is
+obsolete. OAuth credentials sit next to the file, in `credentials/`.
+
+The Swift server reads only `[tts]`, so the shared file is safe for it. Inside
+`[servers.*]` and `[wrapper.*]` an unknown key is an **error** — `comand` must
+not silently disable a server — while unknown top-level tables are left alone.
+
+`add`, `wrap` and `rm` edit through `toml_edit`, so comments and `[tts]` survive
+— go-mcpproxy rewrote the whole file and dropped them. Writes are atomic, mode
+0600, because headers can hold credentials.
+
+**The config is the allowlist.** Nothing is launched, contacted or run unless it
+is listed there, and the file is in the user's home, outside any project, so a
+project's MCP configuration cannot widen it.
+
+### The core
+
+| | core |
+|---|---|
+| Linux | in-process: `android_*`, `image_crop`, `image_diff`, `image_ocr` (if tesseract runs) |
+| macOS | `nautilus-mcp-macos`, found next to the hub (or `--core <path>`), supervised |
+
+**The device is detected at startup, and again on `nautilus_refresh`.** Plugging
+one in mid-session used to mean restarting the client's session. The refresh
+rebuilds the in-process tools from what the machine offers now — a device
+attached or removed, tesseract installed — reports what was added and removed,
+and the client is sent `tools/list_changed`. The frame store is kept across the
+rebuild with its epoch bumped, so ids never repeat and a frame from before is
+refused as stale rather than read against a different device. On macOS the
+refresh restarts the Swift core, which binds its device at startup.
+
+It is a tool rather than a poll because `adb devices` once a second, forever,
+to catch an event that happens a few times a session is the wrong trade — and
+because a tool that vanishes when a cable wiggles would be worse than one the
+caller asks for.
+
+`--core off` forces the in-process tools. The hub forwards `--android`,
+`--config` (when given), `--voice` and `--prototypes` to a Swift core. A Swift
+core owns Android and the frame store, so the in-process tools are not started
+beside it: two frame stores would hand out colliding `frame_id`s.
+
+The core is named `nautilus-macos` in the status and for `nautilus_restart`.
+The name starts with the reserved prefix, so no configured server can take it.
+
+### Names
+
+| | example |
+|---|---|
+| core | `android_tap`, `macos_capture_window` |
+| proxied | `godev__search_godoc` |
+| wrapper | `test` |
+| built-in | `nautilus_status`, `nautilus_refresh`, `nautilus_restart`, `nautilus_search_tools`, `nautilus_call_tool` |
+
+Server and wrapper names: up to 32 of `[A-Za-z0-9_-]`, no `__`, not starting
+with `nautilus`. A wrapper whose name a core tool already has is **not listed** —
+the core tool is what that name has always meant — and the status says why.
+
+### Restart on rebuild
+
+Each command server's executable (unresolved, so a retargeted symlink counts)
+and its `watch` files are fingerprinted by size and mtime. They are checked on
+every call to that server and on every `--poll` tick. A change waits for the
+files to be still for `--settle` (giving up after 30 s), then the new build is
+started, initialized and listed *before* the old one is stopped.
+
+| | |
+|---|---|
+| new build fails to start | old process stopped, **last tools stay listed**, calls return the start error plus the last 4 KB of stderr; the next call or rebuild retries |
+| crash during a call | the error carries recent stderr; the next call restarts it |
+| tools changed | `notifications/tools/list_changed` to the client |
+
+### Validation against the running build
+
+A call is validated against the input schema of **the build running now**. A
+call shaped for an old build fails fast, and the message carries the current
+schema. On an unknown tool or a validation failure the list is re-fetched
+**once** before rejecting — a remote server that reloaded without saying so
+keeps working.
+
+The error split stays as it was: a tool that ran and failed is
+`isError: true`; a name that could never be valid is `-32602`. For proxied
+names that line falls at the server: `ghost__x` (no server `ghost`) is `-32602`,
+while `godev__old` (server exists, tool gone) is a tool error listing what
+`godev` offers now, because a rebuild may simply have renamed it.
+
+### Remote servers
+
+Streamable HTTP (one POST per message, session id echoed back, answers as JSON or
+an SSE stream) and legacy SSE (a standing GET whose first event names the POST
+URL). That GET is the one request not made through ureq: ureq never
+hands out the socket under a response, so a quiet stream could only be ended
+by the server, and every reconnect leaked a stream and its reader thread.
+`proxy/stream.rs` owns the socket and shuts it down on close or drop. Header values expand `${NAME}` at connect time, so secrets stay in the
+environment.
+
+`nautilus-mcp auth <name>`: probe without credentials → protected resource
+metadata (RFC 9728, from the 401's `WWW-Authenticate` or the well-known path) →
+authorization server metadata (RFC 8414, then OpenID, then the spec's default
+paths) → reuse, `--client-id`, or dynamic registration (RFC 7591) → browser,
+PKCE S256 and the `resource` indicator (RFC 8707) → loopback callback on
+`127.0.0.1` → token. Tokens are refreshed when about to expire, or once after a
+401; credentials are reloaded on every reconnect, so `auth` run while serving
+takes effect on the next call. An auth failure drops the connection and tells
+the agent to ask the user to run `nautilus-mcp auth <name>`.
+
+### Wrapper tools
+
+`[wrapper.<name>]` runs one fixed command with `/bin/sh -c`, stdin empty, in the
+hub's working directory (the project, when a client launches it) unless `dir`
+says otherwise. The result has `exit_code`, `stdout`, `stderr` — each stream
+tail-truncated to `max_output` — as structured content with an output schema;
+non-zero is `isError`. On timeout the **process group** is killed, so a compiler
+started by `make` does not outlive it.
+
+This is the one place nautilus-mcp runs a shell command, and it is bounded the
+same way the browser rule is: the agent picks *which* configured command, never
+*what* it says.
+
+### One event at a time
+
+The main thread owns everything — the in-process tools are `Rc`, and requests
+stay serialized as they always were. Background threads only read: stdin, a
+ticker, each upstream's stdout and stderr. They wake the main loop through one
+channel. A restart blocks requests while it runs; that is the serial rule, not
+a regression. Startup starts servers in parallel.
+
+Ticks that pile up behind a slow call are coalesced — and **anything else
+drained while coalescing is kept**. The first version discarded it, which lost a
+`tools/list` that arrived during a restart and hung the client.
+
+### What was verified, and how
+
+No device on the Linux dev box, so against fixtures:
+
+- a fake `adb`: observe → crop → tap → stale refusal → observe → diff;
+- real tesseract 5.5: English and Japanese read, region boxes in root coordinates;
+- a stdio fixture server, driven through `serve`: rebuild → `list_changed` →
+  new tool; crash with stderr; broken build keeping its tools; config edited
+  live, then broken and fixed; search, call_tool, restart; no orphan processes;
+- an OAuth-protected HTTP fixture that checks PKCE and the resource indicator:
+  401 hint, `auth`, refresh of an expired token, streamable HTTP with an SSE
+  answer, legacy SSE, `logout`;
+- the Swift core role, played by the stdio fixture via `--core`;
+- legacy SSE reconnects: five `nautilus_restart`s left 6 open streams and 9
+  threads before the GET moved onto its own socket (`proxy/stream.rs`), and 1
+  and 4 after; TLS on that path checked against a public host;
+- `nautilus_refresh` against the real Retroid Pocket 3+, behind an `adb` wrapper
+  that hides it until "plugged in": tools added, `list_changed` sent once,
+  `android_info` and `android_read_text` answered, tools removed on "unplug".
+
+Not verified: the real Swift server as the core on macOS.
 
 ## Configuration
 
@@ -660,14 +855,20 @@ must fail the tool call, not hang the server.
 ## Build & Run
 
 ```bash
-make build          # Rust cdylib + Swift server
-make test           # both suites
-make install        # ~/bin/nautilus-mcp
+make build          # Rust core + hub, and on macOS the Swift server
+make test           # both suites (Linux: Rust only)
+make install        # ~/bin/nautilus-mcp (hub); on macOS also ~/bin/nautilus-mcp-macos (core)
 make list-tools     # what this machine offers
 
 # configuration (all optional)
 nautilus-mcp --config ./config.example.toml
 NAUTILUS_CONFIG=~/.config/nautilus/config.toml nautilus-mcp
+
+# other MCP servers, and project commands as tools
+nautilus-mcp add godev -- ~/src/go-dev-mcp/output/godevmcp serve
+nautilus-mcp add example https://mcp.example.com/mcp && nautilus-mcp auth example
+nautilus-mcp wrap test 'make test'
+nautilus-mcp ls -v; nautilus-mcp tools; nautilus-mcp call godev search_godoc query=mcp
 
 # after changing crates/lib/src/nautilus.udl
 make gen-uniffi
@@ -690,6 +891,7 @@ nautilus-mcp/
 │   ├── android/         # device.rs (adb transport), tools.rs (primitives)
 │   └── nautilus.udl
 ├── crates/lib/examples/ # android_probe.rs — drive the tools without the server
+├── crates/server/src/   # the hub: mcp.rs, cli.rs, the in-process core, proxy/
 ├── swift/Sources/
 │   ├── NautilusMcp/     # executable: args + stdio loop
 │   ├── NautilusKit/     # MCP server + tools
@@ -725,8 +927,9 @@ binary and `codesign -v` calls it valid.
 **UniFFI checksum mismatch**: regenerate; the script copies for you.
 
 **No `android_` tools**: check `adb devices`. An `unauthorized` device needs the
-on-screen "Allow USB debugging" prompt accepted. The reason is logged to stderr
-at startup.
+on-screen "Allow USB debugging" prompt accepted. Plugged in after the server
+started? Call `nautilus_refresh` — no session restart needed. The reason is in
+`nautilus_status`.
 
 **No `browser_observe`**: Accessibility is not granted, and the grant belongs to
 the application that *launches* the server — your terminal, or the MCP client —
@@ -761,15 +964,37 @@ granted and names that application. Note these tools are **not** removed when
 the grant is missing — they stay in the list and fail on the way to
 `SCShareableContent`, which every one of them goes through.
 
-**Anything is missing and it is not obvious why**: call `macos_permissions`. It
-is always present, reports both grants, and hands back the startup reasons that
-otherwise only reach stderr.
+**Anything is missing and it is not obvious why**: call `nautilus_status` — the
+hub's, always present: core, startup reasons, every proxied server with its last
+error and stderr, config errors. On macOS, `macos_permissions` adds the grants.
+
+**A proxied server's tools are missing or failing**: `nautilus_status`, or
+`nautilus-mcp tools <name>` in a terminal. Either shows the start error and the
+server's stderr.
+
+**The agent does not see new tools after a rebuild**: `tools/list_changed` was
+sent, but some clients ignore it. `nautilus_search_tools` and
+`nautilus_call_tool` always see the current set.
+
+**A rebuild is picked up too early**: raise `--settle` in the client
+registration, e.g. `claude mcp add nautilus -- nautilus-mcp --settle 1s`.
+
+**A `${VAR}` header is empty**: the variable is not in the environment the
+client launches nautilus-mcp with (`claude mcp add -e VAR=... nautilus -- ...`).
+
+**`auth` fails with "dynamic client registration failed"**: the provider needs
+a pre-registered client — `nautilus-mcp auth --client-id ID --port N <name>`,
+with `http://127.0.0.1:N/callback` registered as its redirect URI. Over SSH,
+forward that port and pass `--no-browser`.
 
 ## What is deliberately not here
 
 The agent (app-server client, backend spawning, goals, skills, conversation
 memory), the Windows C# frontend, speech recognition, and the voice REPL. They
 live in the history of [voice-agent](https://github.com/fpt/voice-agent).
+
+From go-mcpproxy: **prompts and resources are not proxied** — tools only, as
+there — and its config file is not read.
 
 Browser **control** and the demonstration recorder were here and were removed —
 `browser_activate`, `browser_set_value`, `browser_scroll`, `browser_back`,

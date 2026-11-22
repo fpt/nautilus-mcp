@@ -4,8 +4,17 @@
 PREFIX ?= $(HOME)
 BINDIR := $(PREFIX)/bin
 
+# `nautilus-mcp` is always the Rust hub (crates/server): the proxy for other MCP
+# servers, wrapper tools, and — on Linux — the portable core tools in-process.
+# On macOS the Swift server is installed beside it as `nautilus-mcp-macos`, and
+# the hub runs it as its core: unprefixed tools, restarted when rebuilt.
+UNAME := $(shell uname -s)
+HUB_BIN := crates/target/release/nautilus-mcp
+SWIFT_BIN := swift/.build/release/nautilus-mcp
+
 help:
 	@echo "nautilus-mcp — a headless MCP server for macOS perception and Android control."
+	@echo "The installed nautilus-mcp is also a proxy for other MCP servers (see 'nautilus-mcp help')."
 	@echo ""
 	@echo "It speaks MCP over stdio. Point an MCP client at the installed binary;"
 	@echo "there is no REPL and nothing to run interactively."
@@ -25,13 +34,17 @@ help:
 
 install-deps:
 	@cd crates && cargo fetch
+ifeq ($(UNAME),Darwin)
 	@cd swift && swift package resolve
+endif
 
 build:
-	@echo "Building Rust core (cdylib)..."
+	@echo "Building Rust core and the portable server..."
 	@cd crates && cargo build --release
+ifeq ($(UNAME),Darwin)
 	@echo "Building Swift server..."
 	@cd swift && swift build -c release
+endif
 	@echo "Build complete!"
 
 # The binary links libnautilus_core.dylib by ABSOLUTE path into this repo's
@@ -45,37 +58,54 @@ build:
 # valid, so nothing about the file itself gives the game away.
 install: build
 	@mkdir -p "$(BINDIR)"
-	@cp swift/.build/release/nautilus-mcp "$(BINDIR)/nautilus-mcp"
+	@cp $(HUB_BIN) "$(BINDIR)/nautilus-mcp"
 	@codesign --force --sign - "$(BINDIR)/nautilus-mcp" 2>/dev/null || true
-	@echo "✅ Installed $(BINDIR)/nautilus-mcp"
-	@echo "   Links the dylib from $(CURDIR)/crates/target/release — keep this repo in place."
+ifeq ($(UNAME),Darwin)
+	@cp $(SWIFT_BIN) "$(BINDIR)/nautilus-mcp-macos"
+	@codesign --force --sign - "$(BINDIR)/nautilus-mcp-macos" 2>/dev/null || true
+	@echo "✅ Installed $(BINDIR)/nautilus-mcp (hub) and $(BINDIR)/nautilus-mcp-macos (its core)"
+	@echo "   The core links the dylib from $(CURDIR)/crates/target/release — keep this repo in place."
+	@echo "   Reinstalling while a client is connected is fine: the hub restarts the core."
+else
+	@echo "✅ Installed $(BINDIR)/nautilus-mcp (pure Rust, movable)"
+endif
 	@echo "   Register it with an MCP client, e.g.:"
 	@echo "       claude mcp add nautilus -- $(BINDIR)/nautilus-mcp"
 	@case ":$$PATH:" in *":$(BINDIR):"*) ;; *) echo "   ⚠️  $(BINDIR) is not on your PATH." ;; esac
 
 uninstall:
-	@rm -f "$(BINDIR)/nautilus-mcp"
+	@rm -f "$(BINDIR)/nautilus-mcp" "$(BINDIR)/nautilus-mcp-macos"
 	@echo "Removed $(BINDIR)/nautilus-mcp"
 
 list-tools: build
-	@swift/.build/release/nautilus-mcp --list-tools
+ifeq ($(UNAME),Darwin)
+	@$(HUB_BIN) --core $(SWIFT_BIN) --list-tools
+else
+	@$(HUB_BIN) --list-tools
+endif
 
 test:
 	@echo "Rust tests..."
 	@cd crates && cargo test
+ifeq ($(UNAME),Darwin)
 	@echo "Swift tests..."
 	@cd swift && swift test
+endif
 
 gen-uniffi:
 	@bash scripts/gen_uniffi.sh
 
 fmt:
 	@cd crates && cargo fmt --check
+ifeq ($(UNAME),Darwin)
 	@cd swift && swift format lint --recursive --strict Sources Tests || true
+endif
 
 fmt-fix:
 	@cd crates && cargo fmt
+ifeq ($(UNAME),Darwin)
 	@cd swift && swift format --in-place --recursive Sources Tests || true
+endif
 
 clean:
 	@cd crates && cargo clean

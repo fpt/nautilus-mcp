@@ -21,3 +21,33 @@ voice = "com.apple.voice.enhanced.en-US.Ava"
 [tts.ja]
 voice = "com.apple.voice.enhanced.ja-JP.Kyoko"
 rate = 0.45       # Kyoko reads a little fast at the shared default
+
+# ---------------------------------------------------------------------------
+# Other MCP servers behind this one. Their tools appear as <server>__<tool>.
+# This file is the allowlist: nothing is launched, contacted or run unless it
+# is listed here. Edit by hand or with `nautilus-mcp add` / `wrap` / `rm`
+# (which keep your comments); a running nautilus-mcp applies changes live.
+# Inside these tables an unknown key is an error, so a typo is not ignored.
+
+# A local stdio server, restarted whenever its executable (or a watch file)
+# changes — rebuild it and keep working, no client restart.
+# [servers.godev]
+# command = "/Users/me/src/go-dev-mcp/output/godevmcp"   # absolute
+# args = ["serve"]
+# env = { LOG_LEVEL = "debug", GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+# watch = ["/Users/me/src/go-dev-mcp/config.yaml"]
+
+# A remote server: streamable HTTP, or SSE if the path ends in /sse.
+# OAuth: run `nautilus-mcp auth example` once. A static token: a header.
+# [servers.example]
+# url = "https://mcp.example.com/mcp"
+# transport = "http"
+# headers = { Authorization = "Bearer ${EXAMPLE_TOKEN}" }
+
+# A tool that runs one fixed shell command. The agent passes no arguments.
+# [wrapper.test]
+# command = "make test"
+# description = "Run the test suite."
+# dir = "~/src/app"        # default: the server's working directory (the project)
+# timeout = "5m"           # default 10m
+# max_output = 100000      # bytes kept from the end of stdout and of stderr

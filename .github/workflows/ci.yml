@@ -10,10 +10,14 @@ on:
 # hosted runners do not provide — building it on an older image fails on the
 # platform requirement rather than on anything real. The Rust crate has no
 # native dependencies (nautilus-core shells out to `adb`; there is no llama.cpp
-# any more), so it builds anywhere.
+# any more), so it builds anywhere — and the portable server in crates/server
+# is the Linux build, so it is tested on Linux too.
 jobs:
   rust-tests:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 

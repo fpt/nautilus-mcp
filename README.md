@@ -1,7 +1,8 @@
 # nautilus-mcp
 
 A **headless MCP server** that gives an MCP client eyes on a Mac and hands on an
-Android device.
+Android device — and is the one server you register: the MCP servers you are
+developing sit behind it, restarted whenever you rebuild them.
 
 It runs no model of its own and drives no agent. It exposes what the machine can
 do — read the screen, recognise text, speak, tap and swipe a phone — and lets
@@ -13,7 +14,9 @@ MCP client (Claude Code, …)
         ▼
    nautilus-mcp  ── macOS: ScreenCaptureKit · Vision OCR · AVSpeech · Foundation Models
         │
-        └──────── Android: adb (screenshot, tap, swipe, keys)
+        ├──────── Android: adb (screenshot, tap, swipe, keys)
+        ├──────── your MCP servers: <server>__<tool> (stdio, HTTP, SSE, OAuth)
+        └──────── your commands: `make test` as a tool
 ```
 
 ## Tools
@@ -73,8 +76,9 @@ fraction belongs are rejected rather than clamped.
 
 ## Install
 
-Needs macOS 26+, a Rust toolchain, and — for the Android tools — `adb` on PATH
-with USB debugging enabled on the device.
+Needs a Rust toolchain; macOS 26+ for the Mac tools (see **Linux** below
+otherwise); and — for the Android tools — `adb` on PATH with USB debugging
+enabled on the device.
 
 ```bash
 make install          # builds and installs ~/bin/nautilus-mcp
@@ -97,7 +101,9 @@ Or in an MCP client's config file:
 }
 ```
 
-> The binary links `libnautilus_core.dylib` by absolute path into this repo's
+> On macOS this installs two binaries: `nautilus-mcp`, the hub you register,
+> and `nautilus-mcp-macos`, the Swift server it runs behind it. The latter links
+> `libnautilus_core.dylib` by absolute path into this repo's
 > `crates/target/release`, so keep the repo where it is.
 
 ### Options
@@ -106,6 +112,9 @@ Or in an MCP client's config file:
 |---|---|
 | `--android <serial\|auto\|off>` | which device to bind (default `auto`) |
 | `--voice <identifier>` | voice for `say` (or `NAUTILUS_TTS_VOICE`) |
+| `--config <path>` | the config file (or `NAUTILUS_CONFIG`; default `~/.config/nautilus/config.toml`) |
+| `--core <path\|off>` | the core server (default: `nautilus-mcp-macos` beside the binary, else in-process) |
+| `--poll`, `--settle`, `--start-timeout` | rebuild and config polling (1s), settle time (300ms), start limit (30s) |
 | `--list-tools` | print the tool names and exit |
 
 ### Permissions
@@ -114,13 +123,66 @@ macOS gates screen access. The first capture prompts for **Screen Recording**
 for whichever app launched the server; grant it in
 System Settings → Privacy & Security and restart that app.
 
+### Linux
+
+On Linux (or anywhere without the Apple frameworks) there is no Swift server;
+`make install` installs the Rust hub alone, which then serves the part of the
+tool set that does not need macOS in-process:
+
+| | |
+|---|---|
+| `android_*` | all nine primitives, plus `android_read_text` when OCR is available |
+| `image_crop`, `image_diff` | on frames from `android_observe`, with the same stale-frame refusal |
+| `image_ocr` | through the `tesseract` CLI, if installed (`apt install tesseract-ocr tesseract-ocr-jpn`) |
+| `nautilus_status` | always present: what is here, and why anything is missing |
+| proxying, wrappers | everything in the next section |
+
+Screen capture, `image_regions`, `visual_*`, `browser_observe`, `say` and
+`ask_local_model` are macOS-only and absent, not stubbed.
+
+```bash
+make install                  # ~/bin/nautilus-mcp, pure Rust
+claude mcp add nautilus -- ~/bin/nautilus-mcp
+```
+
+## Other MCP servers, behind this one
+
+When you develop an MCP server, your agent keeps running the build that was
+current when the session started. Register nautilus-mcp once and list your
+servers in its config: it restarts a server when its binary changes, picks up
+config edits while it runs, and tells the client the tool list changed.
+
+```bash
+nautilus-mcp add godev -- ~/src/go-dev-mcp/output/godevmcp serve   # a local stdio server
+nautilus-mcp add example https://mcp.example.com/mcp               # streamable HTTP or SSE
+nautilus-mcp auth example                                          # OAuth in the browser, if needed
+nautilus-mcp wrap test 'make test'                                 # a shell command as a tool
+nautilus-mcp ls -v
+```
+
+Everything lives in the same `~/.config/nautilus/config.toml` as `[tts]` — see
+`config.example.toml`. The config is the allowlist: nothing is launched,
+contacted or run unless it is listed there.
+
+| | |
+|---|---|
+| restart on rebuild | the executable and any `watch` files are checked on every call and every second; a failed build keeps its tools listed and reports its stderr |
+| validation | arguments are checked against the schema of the build running *now*, and a mismatch returns the current schema |
+| `nautilus_status` | every server: running or not, its tools, its last error |
+| `nautilus_search_tools`, `nautilus_call_tool` | reach tools the client's own tool search has not indexed yet |
+| `nautilus-mcp tools`, `call` | the same servers from a terminal: `call godev search_godoc query=mcp` |
+
+This is [go-mcpproxy](https://github.com/fpt/go-mcpproxy), merged in. Its own
+config file is not read; move servers over with `nautilus-mcp add`. Built-in
+tools are `nautilus_*` rather than `mcpproxy_*`.
+
 ## Development
 
 See **[CLAUDE.md](CLAUDE.md)** for the architecture, the invariants worth
 knowing, and what is deliberately not here.
 
 ```bash
-make test        # Rust + Swift
+make test        # Rust + Swift (Rust only on Linux)
 make gen-uniffi  # after changing crates/lib/src/nautilus.udl
 ```
 

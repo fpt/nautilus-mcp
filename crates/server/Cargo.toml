@@ -1,0 +1,30 @@
+[package]
+name = "nautilus-mcp-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The portable nautilus-mcp server: Android control and frame tools, without the macOS frameworks."
+
+[[bin]]
+name = "nautilus-mcp"
+path = "src/main.rs"
+
+[dependencies]
+nautilus-core = { path = "../lib" }
+base64.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+serde.workspace = true
+toml.workspace = true
+toml_edit = "0.22"
+crossbeam-channel = "0.5"
+# JSON Schema validation of proxied calls. No default features: references are
+# never fetched over the network or from disk.
+jsonschema = { version = "0.62", default-features = false }
+# Remote MCP servers and OAuth. rustls rather than native TLS, so the binary
+# links nothing new.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2"
+sha2 = "0.10"
+getrandom = "0.2"

@@ -3,7 +3,7 @@
 //! It serves three things through one stdio connection:
 //!
 //! - the **core** tools, unprefixed — in-process on Linux (Android, frames,
-//!   crop/diff, OCR through tesseract), or on macOS the Swift server, run and
+//!   crop/diff), or on macOS the Swift server, run and
 //!   supervised as an upstream so it too is restarted when it is rebuilt;
 //! - every server in the config's `[servers.*]`, as `<server>__<tool>`;
 //! - the config's `[wrapper.*]` shell commands, as tools.
@@ -33,7 +33,7 @@ use proxy::config;
 use proxy::conn::Event;
 use proxy::hub::{Core, Hub, CORE_NAME};
 use proxy::upstream::{Dialer, Options, Upstream};
-use tools::{Frames, ImageCropTool, ImageDiffTool, ImageOcrTool, Tesseract};
+use tools::{Frames, ImageCropTool, ImageDiffTool};
 
 const USAGE: &str = "\
 nautilus-mcp — one MCP server for Android control, macOS perception, and the
@@ -70,7 +70,7 @@ Serve options:
   --help                       Show this message.
 
 Environment:
-  ADB, TESSERACT               the adb and tesseract binaries";
+  ADB                          the adb binary";
 
 fn log(text: &str) {
     eprintln!("nautilus-mcp: {text}");
@@ -387,30 +387,11 @@ fn local_tools(android: Option<&str>, frames: &Frames) -> (Vec<Box<dyn Tool>>, V
         }),
     ];
 
-    let ocr = match Tesseract::detect() {
-        Ok(t) => {
-            note(format!(
-                "OCR available through tesseract ({})",
-                t.languages.join(", ")
-            ));
-            let t = Rc::new(t);
-            tools.push(Box::new(ImageOcrTool {
-                frames: frames.clone(),
-                ocr: t.clone(),
-            }));
-            Some(t)
-        }
-        Err(why) => {
-            note(format!("no image_ocr / android_read_text: {why}"));
-            None
-        }
-    };
-
     match android {
         None | Some("off") => note("Android tools disabled (--android off)".into()),
         Some(spec) => {
             let serial = (spec != "auto").then(|| spec.to_string());
-            match tools::android_tools(serial, frames, ocr) {
+            match tools::android_tools(serial, frames) {
                 Ok(list) => {
                     note(format!("bound Android device, {} tool(s)", list.len()));
                     tools.extend(list);

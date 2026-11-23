@@ -96,12 +96,15 @@ house_rules:
 
   - id: device_overlays_are_not_game_ui
     rule: >
-      Beware of overlays drawn by other apps. This device previously ran the
-      Retroid Pocket key-binding app, which painted "L1"/"R1" glyphs over the
-      lower corners — not game UI, device-specific, and OCR noise. They have
-      since been removed, revealing the game's own icons: a CASTLE emblem lower
-      left (city toggle) and a CIRCULAR emblem lower right (main menu). Never
-      key a skill off anything another app might be drawing.
+      Beware of overlays drawn by other apps. The Retroid Pocket key-binding
+      app (com.retroidpocket.gameassistant) paints X / B / L1 / R1 glyphs over
+      every screen — not game UI, device-specific, and never a target. The X at
+      about (0.973, 0.41) is NOT a close button; a model that took it for one
+      tapped it in a loop. Under the L1/R1 glyphs sit the game's own icons: a
+      CASTLE emblem lower left (city toggle) and a CIRCULAR emblem lower right
+      (main menu). The overlay was removed once and has come back, so do not
+      assume it is gone. Never key a skill off anything another app might be
+      drawing.
 
   - id: observations_expire
     rule: >

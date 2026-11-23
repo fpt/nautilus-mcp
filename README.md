@@ -131,15 +131,16 @@ tool set that does not need macOS in-process:
 
 | | |
 |---|---|
-| `android_*` | all nine primitives, plus `android_read_text` when OCR is available |
+| `android_*` | all nine primitives |
 | `image_crop`, `image_diff` | on frames from `android_observe`, with the same stale-frame refusal |
-| `image_ocr` | through the `tesseract` CLI, if installed (`apt install tesseract-ocr tesseract-ocr-jpn`) |
 | `nautilus_status` | always present: what is here, and why anything is missing |
-| `nautilus_refresh` | look again after plugging in a device (or installing tesseract) — no session restart |
+| `nautilus_refresh` | look again after plugging in a device — no session restart |
 | proxying, wrappers | everything in the next section |
 
-Screen capture, `image_regions`, `visual_*`, `browser_observe`, `say` and
-`ask_local_model` are macOS-only and absent, not stubbed.
+OCR (`image_ocr`, `android_read_text`), screen capture, `image_regions`, `visual_*`, `browser_observe`, `say` and
+`ask_local_model` are macOS-only and absent, not stubbed. For text on
+Linux, read an `image_crop` of the region with the client's own vision model —
+measured on a game, it read correctly what tesseract got wrong almost every time.
 
 ```bash
 make install                  # ~/bin/nautilus-mcp, pure Rust

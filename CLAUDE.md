@@ -208,7 +208,7 @@ project's own commands through it.
 | `main.rs` | `serve` (the default) and the event loop; picks the core |
 | `cli.rs` | `add`, `wrap`, `rm`, `ls`, `tools`, `call`, `auth`, `logout` |
 | `mcp.rs` | the protocol: negotiation, the error split, `tools/list_changed` |
-| `frames.rs`, `tools.rs` | the in-process core: Android, frames, crop/diff, OCR via tesseract |
+| `frames.rs`, `tools.rs` | the in-process core: Android, frames, crop/diff |
 | `proxy/hub.rs` | everything `tools/list` shows and `tools/call` reaches; the built-ins |
 | `proxy/upstream.rs` | one supervised upstream: rebuild detection, restart, validation |
 | `proxy/conn.rs`, `proxy/http.rs` | stdio, streamable HTTP and SSE transports |
@@ -239,14 +239,13 @@ project's MCP configuration cannot widen it.
 
 | | core |
 |---|---|
-| Linux | in-process: `android_*`, `image_crop`, `image_diff`, `image_ocr` (if tesseract runs) |
+| Linux | in-process: `android_*`, `image_crop`, `image_diff` — no OCR, see below |
 | macOS | `nautilus-mcp-macos`, found next to the hub (or `--core <path>`), supervised |
 
 **The device is detected at startup, and again on `nautilus_refresh`.** Plugging
 one in mid-session used to mean restarting the client's session. The refresh
 rebuilds the in-process tools from what the machine offers now — a device
-attached or removed, tesseract installed — reports what was added and removed,
-and the client is sent `tools/list_changed`. The frame store is kept across the
+attached or removed — reports what was added and removed, and the client is sent `tools/list_changed`. The frame store is kept across the
 rebuild with its epoch bumped, so ids never repeat and a frame from before is
 refused as stale rather than read against a different device. On macOS the
 refresh restarts the Swift core, which binds its device at startup.
@@ -255,6 +254,17 @@ It is a tool rather than a poll because `adb devices` once a second, forever,
 to catch an event that happens a few times a session is the wrong trade — and
 because a tool that vanishes when a cable wiggles would be worse than one the
 caller asks for.
+
+**There is no OCR on Linux, on purpose.** The in-process core once offered
+`image_ocr` and `android_read_text` through the `tesseract` CLI. Measured on
+Call of Dragons (Retroid Pocket 3+, eng+jpn data, a local vision model as the
+client), it misread nearly everything: ヌヴォラ地区 came back as `Ra SH`,
+自分の都市 as nothing, the K/X/Y coordinate line as `ae`. Of about ten calls only
+the UTC clock was right. The client's own vision model read the same text
+correctly every time from the screenshot or an `image_crop` zoom. A tool that
+returns plausible wrong text is worse than no tool, so it is gone: on Linux, read
+text by looking at a crop. The macOS core keeps Vision OCR, which is a different
+engine and was not part of that measurement.
 
 `--core off` forces the in-process tools. The hub forwards `--android`,
 `--config` (when given), `--voice` and `--prototypes` to a Swift core. A Swift
@@ -355,7 +365,6 @@ drained while coalescing is kept**. The first version discarded it, which lost a
 No device on the Linux dev box, so against fixtures:
 
 - a fake `adb`: observe → crop → tap → stale refusal → observe → diff;
-- real tesseract 5.5: English and Japanese read, region boxes in root coordinates;
 - a stdio fixture server, driven through `serve`: rebuild → `list_changed` →
   new tool; crash with stderr; broken build keeping its tools; config edited
   live, then broken and fixed; search, call_tool, restart; no orphan processes;

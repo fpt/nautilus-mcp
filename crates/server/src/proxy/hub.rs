@@ -36,7 +36,11 @@ pub const CORE_NAME: &str = "nautilus-macos";
 const DEFAULT_MAX_RESULTS: u64 = 5;
 
 /// What the macOS build has that the in-process core does not.
-const MACOS_ONLY: [(&str, &str); 8] = [
+const MACOS_ONLY: [(&str, &str); 9] = [
+    (
+        "image_ocr / android_read_text",
+        "Vision OCR; on Linux, look at an image_crop instead",
+    ),
     (
         "macos_list_windows / macos_capture_window / macos_read_text",
         "ScreenCaptureKit",
@@ -433,8 +437,7 @@ impl Hub {
             json!({
                 "name": REFRESH,
                 "description": format!("Look again at what this machine offers and update the tool \
-                    list: an Android device plugged in (or unplugged) since nautilus-mcp started, \
-                    tesseract installed since. The device is otherwise only detected at startup. \
+                    list: an Android device plugged in (or unplugged) since nautilus-mcp started. The device is otherwise only detected at startup. \
                     On macOS this restarts the core server. Frames captured before become stale. \
                     Reports which tools were added or removed; {STATUS} explains anything still missing."),
                 "inputSchema": { "type": "object", "properties": {} },
@@ -500,9 +503,7 @@ impl Hub {
                 for n in notes {
                     s.push_str(&format!("  {n}\n"));
                 }
-                s.push_str(&format!(
-                    "  (plugged a device in, or installed tesseract, since? call {REFRESH})\n"
-                ));
+                s.push_str(&format!("  (plugged a device in since? call {REFRESH})\n"));
                 s.push_str("not in this build (macOS only):\n");
                 for (t, why) in MACOS_ONLY {
                     s.push_str(&format!("  {t} — needs {why}\n"));

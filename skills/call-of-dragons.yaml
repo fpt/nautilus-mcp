@@ -50,7 +50,7 @@ house_rules:
       Panel contents change with game state, and the buttons move with them.
       部隊作成 sat at y=0.261 when the panel also offered 一括作成, and at
       y=0.217 when it did not (a march slot was in use). Locate panel buttons by
-      OCR every time.
+      reading their labels on a fresh capture every time.
     evidence: "observed twice in one session, 0.044 apart"
 
   - id: level_badge_is_below_the_sprite
@@ -73,13 +73,12 @@ house_rules:
       tightly: observe, locate the button, tap, verify, repeat.
     severity: high
 
-  - id: prefer_visual_over_ocr
+  - id: prefer_visual_over_reading
     rule: >
-      Use OCR to work out what something IS, once. After that, learn its
-      appearance with visual_learn and find it with visual_find. OCR of this
-      game's stylized Japanese is unreliable — it read ペット as ミツ at 0.3
-      confidence — while a learned icon matches to within a few pixels and does
-      not care about the font, the language, or the scene behind it.
+      Read a label to work out what something IS, once. After that, learn its
+      appearance with visual_learn and find it with visual_find. A learned icon
+      matches to within a few pixels and does not care about the font, the
+      language, or the scene behind it.
       Judge a visual_find by its margin over the runner-up, not by the absolute
       score: a solid match here scores 0.3-0.5 while other icons in the same row
       score 0.08-0.16.
@@ -96,22 +95,26 @@ house_rules:
 
   - id: device_overlays_are_not_game_ui
     rule: >
-      Beware of overlays drawn by other apps. This device previously ran the
-      Retroid Pocket key-binding app, which painted "L1"/"R1" glyphs over the
-      lower corners — not game UI, device-specific, and OCR noise. They have
-      since been removed, revealing the game's own icons: a CASTLE emblem lower
-      left (city toggle) and a CIRCULAR emblem lower right (main menu). Never
-      key a skill off anything another app might be drawing.
+      Beware of overlays drawn by other apps. The Retroid Pocket key-binding
+      app (com.retroidpocket.gameassistant) paints X / B / L1 / R1 glyphs over
+      every screen — not game UI, device-specific, and never a target. The X at
+      about (0.973, 0.41) is NOT a close button; a model that took it for one
+      tapped it in a loop. It sits over the game's march-management toggle (see
+      check_marches), so tapping it opens or closes that panel rather than
+      dismissing anything. Under the L1/R1 glyphs sit the game's own icons: a
+      CASTLE emblem lower left (city toggle) and a CIRCULAR emblem lower right
+      (main menu). The overlay was removed once and has come back, so do not
+      assume it is gone. Never key a skill off anything another app might be
+      drawing.
 
   - id: observations_expire
     rule: >
       The harness now enforces this, so it is a rule about which tool to reach
       for rather than one to remember: every action advances an interaction
       epoch, and reading a frame captured before it is refused with
-      {"error": "stale_frame", ...}. Prefer android_read_text and
-      android_look_for, which capture first and cannot be stale. Reach for
-      android_observe + image_ocr only when you want several readings of one
-      frame, or image_diff, which is deliberately allowed to read an old frame
+      {"error": "stale_frame", ...}. Prefer android_look_for, which captures
+      first and cannot be stale. Reach for android_observe + image_crop only
+      when you want several looks at one frame, or image_diff, which is deliberately allowed to read an old frame
       because comparing before with after is its purpose.
 
   - id: wait_for_animations_before_the_next_tap
@@ -131,14 +134,14 @@ house_rules:
 # Where am I? Read this before anything else.
 # ---------------------------------------------------------------------------
 state_detection:
-  method: image_ocr
+  method: look at an image_crop of the region
   region: {x1: 0.85, y1: 0.05, x2: 1.0, y2: 0.13}
   states:
     in_city:
-      signal: "text contains 自分の都市"
+      signal: "the label reads 自分の都市"
     on_map:
       signal: >
-        text is a district name (e.g. ステルデン地区) and the top bar shows
+        the label is a district name (e.g. ステルデン地区) and the top bar shows
         coordinates K:<server> X:<n> Y:<n>
   note: >
     The top-right label is the only reliable city/map discriminator. The
@@ -196,8 +199,8 @@ resource_tabs:
   note: >
     There is NO gem tab — the bar does not scroll, it holds exactly these five.
     Gem nodes have to be found on the map by eye, which is why a map-sprite
-    prototype is worth having for them. OCR reads 鉄鉱 as 鈇鉱, so match these
-    labels loosely or go by position.
+    prototype is worth having for them. Go by position rather than by the small
+    labels.
 
 # ---------------------------------------------------------------------------
 # What the daily challenges are, and which skill satisfies each. The list is
@@ -218,6 +221,9 @@ daily_challenges:
     - {title: テクノロジーの研究を1回完了する,          skip: true, reason: "research in the queue runs 19+ days; not completable in a day"}
     - {title: Lv.2以上のユニット×2,000を訓練する,      skip: true, reason: "depends on training queue progress; a batch was 6h33m from done"}
 
+# ---------------------------------------------------------------------------
+# locate_by: label means find the button by reading its label on a fresh
+# capture (android_observe, then image_crop to zoom in), then tap its centre.
 # ---------------------------------------------------------------------------
 skills:
 
@@ -263,9 +269,9 @@ skills:
       - action: wait
         seconds: 2
     verify:
-      method: image_ocr
+      method: look at an image_crop of the region
       region: {x1: 0.48, y1: 0.93, x2: 1.0, y2: 1.0}
-      expect: "アイテム and 英雄 are present"
+      expect: "the icon row with アイテム and 英雄 is showing"
     entries:  # icon row sits at y~0.945, labels at y~0.97
       - {label: ペット,   x: 0.531}
       - {label: 冒険録,   x: 0.604}
@@ -274,8 +280,7 @@ skills:
       - {label: アイテム, x: 0.819}
       - {label: 英雄,     x: 0.892}
     note: >
-      OCR of these labels is unreliable — ペット reads as ミツ — but their
-      positions are stable. Prefer learning each icon with visual_learn; the
+      The labels are small, but their positions are stable. Prefer learning each icon with visual_learn; the
       icon sits at y~0.945, its label at y~0.97, and matching the icon is both
       language-independent and far more accurate than reading the label.
 
@@ -296,7 +301,7 @@ skills:
           the tile is free — do not proceed without it.
       - action: tap
         target: 派遣
-        locate_by: ocr
+        locate_by: label
         fallback: {x: 0.540, y: 0.640}
         danger: >
           移転 sits on the SAME ROW at x~0.383 and RELOCATES YOUR CITY.
@@ -304,11 +309,11 @@ skills:
           text; never tap this row blind.
       - action: tap
         target: 部隊作成
-        locate_by: ocr
+        locate_by: label
         note: see house_rule panels_shift_between_runs
       - action: tap
         target: 進軍
-        locate_by: ocr
+        locate_by: label
         fallback: {x: 0.828, y: 0.864}
         note: the gold button; it shows the march time beneath it
     verify:
@@ -336,11 +341,11 @@ skills:
           someone is already working the node — pick another.
       - action: tap
         target: 採集
-        locate_by: ocr
+        locate_by: label
         fallback: {x: 0.605, y: 0.762}
       - action: tap
         target: 部隊作成
-        locate_by: ocr
+        locate_by: label
       - action: check
         condition: >
           the march screen shows 輸送ユニット (transport unit, e.g. ドラフトホース)
@@ -352,7 +357,7 @@ skills:
           about to send the wrong army; back out.
       - action: tap
         target: 進軍
-        locate_by: ocr
+        locate_by: label
     verify:
       method: check_marches
       expect: "a march at the node's coordinates with status 採集中 <hh:mm:ss>"
@@ -373,9 +378,9 @@ skills:
       - action: skill
         skill: check_marches
         note: >
-          Read the N/5 counter in the 部隊管理 header. OCR it with the pattern
-          (\d+)/(\d+) — the icon beside it bleeds into the text ("S,4/5"), but
-          the digits come through. Numbers OCR reliably here; Japanese does not.
+          Read the <used>/<total> counter in the 部隊管理 header; crop it if it
+          is small. Only the digits matter — the icon beside it is not part of
+          the number.
       - action: stop_if
         condition: used >= total
         note: every slot busy; nothing to do until one returns
@@ -410,7 +415,7 @@ skills:
         target:
           semantic: gather
           visual: {prototype: farlight_cod/gather_button}
-          fallback: {ocr: 採集}
+          fallback: {label: 採集}
         note: >
           Do NOT hardcode this one. The node panel is anchored to the node, so it
           appears wherever the node landed — centre-left in one run, right in the
@@ -419,7 +424,7 @@ skills:
         target:
           semantic: create_march
           visual: {prototype: farlight_cod/create_march_button}
-          fallback: {ocr: 部隊作成}
+          fallback: {label: 部隊作成}
       - action: check
         condition: >
           the composition screen shows 輸送ユニット (ドラフトホース) with a non-zero
@@ -473,8 +478,8 @@ skills:
         note: >
           Each row is: title, 報酬 icons, progress on the right, and an action
           button at x~0.843. Scroll the list to enumerate; rows sit about 0.18
-          apart. OCR the titles and progress — Japanese titles come through well
-          enough here, and the fractions are reliable.
+          apart. Read the titles and progress from the capture, cropping a row
+          with image_crop when it is too small to read.
       - action: for_each_row
         cases:
           - when: "button reads 受取 (green)"
@@ -668,7 +673,7 @@ skills:
           line above it states what a kill yields at the chosen level.
       - action: tap
         target: 捜索
-        locate_by: ocr
+        locate_by: label
         fallback: {x: 0.181, y: 0.732}
       - action: observe
         expect_panel: >
@@ -678,16 +683,16 @@ skills:
           from a beast or an empty tile.
       - action: tap
         target: 攻撃
-        locate_by: ocr
+        locate_by: label
         note: >
           Locate and tap in as tight a loop as possible; re-observe and retry if
           the panel has moved. Prefer 闇の城砦, which does not move at all.
       - action: tap
         target: 部隊作成
-        locate_by: ocr
+        locate_by: label
       - action: tap
         target: 進軍
-        locate_by: ocr
+        locate_by: label
     verify:
       method: check_marches
       expect: a march to the darkling's coordinates; a combat report follows
@@ -710,7 +715,7 @@ skills:
           button, and footer 闇のクリーチャー X:<n> Y:<n>
       - action: tap
         target: 捕獲
-        locate_by: ocr
+        locate_by: label
     cost: one capture item per attempt
     note: >
       The footer says 闇のクリーチャー for beasts too, so the footer alone does

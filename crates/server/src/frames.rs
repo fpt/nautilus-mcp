@@ -268,7 +268,7 @@ impl FrameStore {
             "actions_since": self.epoch - frame.observed_epoch,
             "recovery": "The screen has been acted on since this frame was captured, so anything \
                          read from it describes a world that no longer exists. Capture again with \
-                         android_observe, or use a tool that captures for you (android_read_text).",
+                         android_observe.",
         })
         .to_string()
     }
